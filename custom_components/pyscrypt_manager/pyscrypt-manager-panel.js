@@ -1,497 +1,857 @@
 /**
- * Pyscrypt Manager Dedicated Sidebar App
+ * Pyscrypt Manager Dedicated Three-Column Workspace App
  * Registered as a custom panel in Home Assistant.
+ * Fully customized for Dynatrace (light/dark) look and feel.
  */
 
 class PyscryptManagerPanel extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
+    
+    // Theme detection for Dynatrace theme variables
+    const useDark = hass.themes && hass.themes.darkMode !== undefined
+      ? hass.themes.darkMode
+      : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    this.setAttribute('theme', useDark ? 'dark' : 'light');
+
     if (!this.shadowRoot) {
       this.initPanel();
+      this.loadFiles();
+    } else {
+      this.updatePanel();
     }
+  }
+
+  constructor() {
+    super();
+    this.files = [];
+    this.selectedFilePath = null;
+    this.selectedFileContent = '';
+    this.selectedFileOriginalContent = '';
+    this.isEditing = false;
+    this.activeTab = 'visual'; // 'visual' or 'code'
+    
+    // Filters
+    this.selectedFolder = null; // folder string or null
+    this.searchQuery = '';
+
+    // Console output log
+    this.consoleLogs = [];
+  }
+
+  async loadFiles() {
+    try {
+      this.files = await this._hass.callWS({
+        type: 'pyscrypt_manager/list_files'
+      });
+      this.updatePanel();
+    } catch (err) {
+      console.error('Failed to load files:', err);
+    }
+  }
+
+  async selectFile(filePath) {
+    if (this.isEditing && this.selectedFileContent !== this.selectedFileOriginalContent) {
+      if (!confirm('You have unsaved changes. Discard them?')) {
+        return;
+      }
+    }
+
+    this.selectedFilePath = filePath;
+    this.isEditing = false;
+    this.consoleLogs = [];
+
+    if (filePath) {
+      try {
+        const result = await this._hass.callWS({
+          type: 'pyscrypt_manager/get_file',
+          path: filePath
+        });
+        this.selectedFileContent = result.content;
+        this.selectedFileOriginalContent = result.content;
+      } catch (err) {
+        console.error('Failed to load file content:', err);
+        this.selectedFileContent = `# Error loading file: ${err.message || err}`;
+        this.selectedFileOriginalContent = this.selectedFileContent;
+      }
+    } else {
+      this.selectedFileContent = '';
+      this.selectedFileOriginalContent = '';
+    }
+
     this.updatePanel();
+    
+    // Update code editor numbers if active
+    if (this.activeTab === 'code') {
+      setTimeout(() => {
+        this.updateLineNumbers();
+      }, 50);
+    }
+  }
+
+  async saveFile() {
+    if (!this.selectedFilePath) return;
+    
+    const textarea = this.shadowRoot.getElementById('code-textarea');
+    if (textarea) {
+      this.selectedFileContent = textarea.value;
+    }
+
+    try {
+      const btn = this.shadowRoot.getElementById('btn-save');
+      if (btn) btn.disabled = true;
+
+      await this._hass.callWS({
+        type: 'pyscrypt_manager/save_file',
+        path: this.selectedFilePath,
+        content: this.selectedFileContent
+      });
+
+      this.selectedFileOriginalContent = this.selectedFileContent;
+      this.isEditing = false;
+      this.logToConsole('System', 'File saved successfully.', 'success');
+      
+      // Reload file list in background to pick up any metadata changes
+      await this.loadFiles();
+    } catch (err) {
+      this.logToConsole('System', `Failed to save file: ${err.message || err}`, 'error');
+    } finally {
+      const btn = this.shadowRoot.getElementById('btn-save');
+      if (btn) btn.disabled = false;
+      this.updatePanel();
+    }
+  }
+
+  async reloadPyscripts() {
+    const btn = this.shadowRoot.getElementById('btn-reload-pyscripts');
+    const svg = btn ? btn.querySelector('svg') : null;
+    if (btn) btn.disabled = true;
+    if (svg) svg.classList.add('spin');
+
+    this.logToConsole('System', 'Triggering Pyscript engine reload...', 'info');
+    try {
+      await this._hass.callService('pyscript', 'reload', {});
+      this.logToConsole('System', 'Pyscript reload triggered. Allow a few seconds for services to re-register.', 'success');
+      
+      // Reload files after a short delay
+      setTimeout(async () => {
+        await this.loadFiles();
+      }, 2000);
+    } catch (err) {
+      this.logToConsole('System', `Reload service call failed: ${err.message || err}`, 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+      if (svg) svg.classList.remove('spin');
+    }
+  }
+
+  async createNewScript() {
+    const scriptPath = prompt('Enter new script path relative to pyscript folder (e.g. "my_script.py" or "heating/my_control.py"):');
+    if (!scriptPath) return;
+
+    let path = scriptPath.trim();
+    if (!path.endsWith('.py')) path += '.py';
+
+    const boilerplate = `# A newly created custom pyscript
+
+@service
+def ${path.split('/').pop().replace('.py', '')}():
+    """My custom pyscript service."""
+    log.info("Running custom pyscript service")
+`;
+
+    try {
+      await this._hass.callWS({
+        type: 'pyscrypt_manager/save_file',
+        path: path,
+        content: boilerplate
+      });
+
+      // Reload files list
+      await this.loadFiles();
+      // Select new file
+      await this.selectFile(path);
+      // Trigger a reload so it becomes immediately callable
+      await this.reloadPyscripts();
+    } catch (err) {
+      alert(`Failed to create file: ${err.message || err}`);
+    }
+  }
+
+  getServiceKey(filePath) {
+    if (!filePath) return '';
+    const base = filePath.replace(/\.py$/, '');
+    return base.replace(/[\/\\]/g, '_');
+  }
+
+  logToConsole(source, message, type = 'info') {
+    const time = new Date().toLocaleTimeString();
+    this.consoleLogs.push({ time, source, message, type });
+    this.renderConsole();
+  }
+
+  renderConsole() {
+    const container = this.shadowRoot.getElementById('console-output');
+    if (!container) return;
+    
+    if (this.consoleLogs.length === 0) {
+      container.innerHTML = `<div style="color:var(--text-muted);">Console ready. Trigger script execution...</div>`;
+      return;
+    }
+
+    container.innerHTML = this.consoleLogs.map(log => {
+      let color = 'var(--text-muted)';
+      if (log.type === 'success') color = 'var(--success-color)';
+      if (log.type === 'error') color = 'var(--error-color)';
+      if (log.type === 'info') color = 'var(--primary-color)';
+
+      return `<div style="margin-bottom:6px; font-family:monospace; font-size:0.85rem; line-height:1.4;">
+        <span style="color:var(--text-muted); font-size:0.75rem;">[${log.time}]</span> 
+        <span style="color:${color}; font-weight:600;">[${log.source}]</span> 
+        <span style="color:var(--text-main); white-space:pre-wrap;">${log.message}</span>
+      </div>`;
+    }).join('');
+
+    container.scrollTop = container.scrollHeight;
+  }
+
+  async runScript(serviceKey, fields) {
+    this.logToConsole('Client', `Executing pyscript.${serviceKey}...`, 'info');
+    
+    // Gather arguments
+    const params = {};
+    if (fields) {
+      for (const fieldKey of Object.keys(fields)) {
+        const input = this.shadowRoot.getElementById(`field-${serviceKey}-${fieldKey}`);
+        if (input) {
+          let val = input.value;
+          if (input.type === 'checkbox') {
+            val = input.checked;
+          } else if (input.type === 'number' || input.className.includes('range-slider')) {
+            val = Number(val);
+          }
+          params[fieldKey] = val;
+        }
+      }
+    }
+
+    this.logToConsole('Client', `Parameters sent: ${JSON.stringify(params)}`, 'info');
+
+    try {
+      const response = await this._hass.callService('pyscript', serviceKey, params, undefined, true);
+      this.logToConsole('Service Result', `Success! Call response: ${JSON.stringify(response)}`, 'success');
+    } catch (err) {
+      this.logToConsole('Service Result', `Error: ${err.message || err}`, 'error');
+    }
   }
 
   initPanel() {
     this.attachShadow({ mode: 'open' });
-    
     this.shadowRoot.innerHTML = `
       <style>
         :host {
-          --primary-color: #03a9f4;
-          --primary-glow: rgba(3, 169, 244, 0.3);
-          --accent-color: #ff9800;
-          --success-color: #4caf50;
-          --error-color: #f44336;
-          --bg-dark: #121214;
-          --bg-card: rgba(30, 30, 35, 0.55);
-          --border-color: rgba(255, 255, 255, 0.08);
-          --font-family: 'Outfit', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+          /* Default to Dark Theme (Dynatrace Strato Dark) */
+          --bg-dark: #141419;
+          --bg-sidebar: #1f1f24;
+          --bg-middle: #1f1f24;
+          --border-color: #2a2a30;
+          --primary-color: #1496ff;
+          --primary-hover: rgba(20, 150, 255, 0.1);
+          --primary-glow: rgba(20, 150, 255, 0.35);
+          --text-main: #f0f0f5;
+          --text-muted: #9595a5;
+          --font-family: 'Outfit', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+          --card-bg: #1f1f24;
+          --card-selected-bg: rgba(20, 150, 255, 0.08);
+          --success-color: #00c6b7;
+          --error-color: #e01a4f;
+          --search-bg: #141419;
+          --console-bg: #141419;
+          --console-text: #f0f0f5;
+          --editor-bg: #141419;
+          --editor-lines-bg: #1f1f24;
+          --editor-lines-text: #5c5c70;
+          --editor-text: #f0f0f5;
+          --btn-secondary-bg: #2a2a30;
+          --btn-secondary-hover: rgba(255, 255, 255, 0.05);
+          --btn-secondary-text: #f0f0f5;
           
           display: block;
           width: 100%;
           height: 100vh;
           background-color: var(--bg-dark);
-          color: #e1e1e6;
+          color: var(--text-main);
           font-family: var(--font-family);
           box-sizing: border-box;
           overflow: hidden;
         }
 
-        /* Layout Structure */
-        .app-container {
+        :host([theme="light"]) {
+          /* Light Theme (Dynatrace Strato Light) */
+          --bg-dark: #f2f2f5;
+          --bg-sidebar: #ffffff;
+          --bg-middle: #ffffff;
+          --border-color: #e6e6ea;
+          --primary-color: #1496ff;
+          --primary-hover: rgba(20, 150, 255, 0.08);
+          --primary-glow: rgba(20, 150, 255, 0.2);
+          --text-main: #2d2e4e;
+          --text-muted: #6f7090;
+          --card-bg: #ffffff;
+          --card-selected-bg: rgba(20, 150, 255, 0.05);
+          --success-color: #00c6b7;
+          --error-color: #e01a4f;
+          --search-bg: #f2f2f5;
+          --console-bg: #f2f2f5;
+          --console-text: #2d2e4e;
+          --editor-bg: #ffffff;
+          --editor-lines-bg: #f2f2f5;
+          --editor-lines-text: #9595a5;
+          --editor-text: #2d2e4e;
+          --btn-secondary-bg: #f2f2f5;
+          --btn-secondary-hover: rgba(0, 0, 0, 0.04);
+          --btn-secondary-text: #2d2e4e;
+        }
+
+        .app-layout {
           display: flex;
-          height: 100%;
           width: 100%;
+          height: 100%;
           overflow: hidden;
         }
 
-        /* Sidebar Navigation */
-        .sidebar {
+        /* Column 1: Left Navigation Sidebar */
+        .left-sidebar {
           width: 260px;
-          background: #18181c;
+          background: var(--bg-sidebar);
           border-right: 1px solid var(--border-color);
           display: flex;
           flex-direction: column;
-          padding: 24px;
+          padding: 20px;
           flex-shrink: 0;
           box-sizing: border-box;
-          justify-content: space-between;
+          overflow-y: auto;
         }
 
-        .brand-header {
+        .brand-section {
           display: flex;
           align-items: center;
           gap: 12px;
-          margin-bottom: 32px;
+          margin-bottom: 24px;
+          flex-shrink: 0;
         }
 
-        .logo-container {
+        .logo-box {
           background: linear-gradient(135deg, #306998 0%, #ffd43b 100%);
-          width: 40px;
-          height: 40px;
-          border-radius: 10px;
+          width: 34px;
+          height: 34px;
+          border-radius: 8px;
           display: flex;
           align-items: center;
           justify-content: center;
-          box-shadow: 0 4px 15px rgba(48, 105, 152, 0.3);
+          box-shadow: 0 4px 12px rgba(48, 105, 152, 0.25);
         }
 
-        .logo-svg {
-          width: 24px;
-          height: 24px;
+        .logo-img {
+          width: 20px;
+          height: 20px;
         }
 
-        .brand-title h1 {
+        .brand-name h1 {
           margin: 0;
-          font-size: 1.15rem;
+          font-size: 1.05rem;
           font-weight: 700;
-          background: linear-gradient(90deg, #fff 0%, #a1a1aa 100%);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
+          color: var(--text-main);
         }
 
-        .brand-title p {
+        .brand-name p {
           margin: 2px 0 0 0;
-          font-size: 0.75rem;
-          color: #71717a;
+          font-size: 0.7rem;
+          color: var(--text-muted);
         }
 
-        .nav-menu {
+        .section-header {
+          font-size: 0.72rem;
+          font-weight: 700;
+          color: var(--text-muted);
+          letter-spacing: 0.08em;
+          margin: 24px 0 10px 0;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          text-transform: uppercase;
+        }
+
+        .nav-list {
           display: flex;
           flex-direction: column;
-          gap: 8px;
-          flex-grow: 1;
+          gap: 4px;
         }
 
         .nav-item {
           display: flex;
           align-items: center;
-          gap: 12px;
-          padding: 12px 16px;
-          border-radius: 8px;
+          justify-content: space-between;
+          padding: 8px 12px;
+          border-radius: 6px;
           cursor: pointer;
-          font-weight: 600;
-          font-size: 0.9rem;
-          color: #a1a1aa;
-          transition: all 0.2s ease;
+          color: var(--text-muted);
+          font-size: 0.85rem;
+          transition: all 0.2s;
           user-select: none;
         }
 
         .nav-item:hover {
-          background: rgba(255, 255, 255, 0.04);
-          color: #fff;
+          background: var(--primary-hover);
+          color: var(--text-main);
         }
 
         .nav-item.active {
-          background: rgba(3, 169, 244, 0.1);
-          color: var(--primary-color);
-          box-shadow: inset 4px 0 0 0 var(--primary-color);
+          background: var(--primary-hover);
+          color: var(--text-main);
+          font-weight: 600;
+          box-shadow: inset 3px 0 0 0 var(--primary-color);
         }
 
-        .nav-icon {
-          width: 20px;
-          height: 20px;
-          fill: currentColor;
+        .nav-item .badge {
+          background: var(--border-color);
+          color: var(--text-muted);
+          font-size: 0.72rem;
+          padding: 2px 6px;
+          border-radius: 10px;
+          min-width: 14px;
+          text-align: center;
         }
 
-        /* Main Workspace */
-        .main-workspace {
-          flex-grow: 1;
+        .nav-item.active .badge {
+          background: var(--primary-color);
+          color: #fff;
+        }
+
+        /* Column 2: Middle Filtered List */
+        .middle-panel {
+          width: 320px;
+          background: var(--bg-middle);
+          border-right: 1px solid var(--border-color);
           display: flex;
           flex-direction: column;
-          height: 100%;
-          overflow: hidden;
-          background: radial-gradient(circle at top right, rgba(3, 169, 244, 0.05), transparent 60%);
-        }
-
-        /* Top App Bar */
-        .top-app-bar {
-          height: 64px;
-          border-bottom: 1px solid var(--border-color);
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 0 32px;
-          background: rgba(18, 18, 20, 0.8);
-          backdrop-filter: blur(8px);
           flex-shrink: 0;
-        }
-
-        .page-title {
-          font-size: 1.2rem;
-          font-weight: 700;
-          margin: 0;
-        }
-
-        .top-bar-actions {
-          display: flex;
-          align-items: center;
-          gap: 16px;
-        }
-
-        .btn-reload {
-          background: rgba(255, 255, 255, 0.06);
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          border-radius: 8px;
-          color: #e1e1e6;
-          padding: 8px 16px;
-          font-size: 0.85rem;
-          font-weight: 600;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          transition: all 0.2s ease;
-        }
-
-        .btn-reload:hover {
-          background: rgba(255, 255, 255, 0.12);
-          border-color: rgba(255, 255, 255, 0.18);
-          transform: translateY(-1px);
-        }
-
-        .spin {
-          animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-          100% { transform: rotate(-360deg); }
-        }
-
-        /* Tab Content Containers */
-        .tab-content {
-          flex-grow: 1;
-          display: none;
-          overflow: hidden;
-          padding: 32px;
           box-sizing: border-box;
         }
 
-        .tab-content.active {
+        .search-container {
           display: flex;
-          gap: 24px;
-        }
-
-        /* Scripts Panel Layout */
-        .scripts-list-panel {
-          width: 380px;
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
+          gap: 8px;
+          padding: 16px;
+          border-bottom: 1px solid var(--border-color);
           flex-shrink: 0;
         }
 
-        .search-wrapper {
-          position: relative;
-        }
-
-        .search-input {
-          width: 100%;
-          background: rgba(0, 0, 0, 0.25);
+        .search-wrap {
+          flex-grow: 1;
+          display: flex;
+          align-items: center;
+          background: var(--search-bg);
           border: 1px solid var(--border-color);
           border-radius: 8px;
-          padding: 12px 12px 12px 40px;
-          color: #fff;
-          font-size: 0.9rem;
-          font-family: inherit;
-          box-sizing: border-box;
-          transition: all 0.2s;
-        }
-
-        .search-input:focus {
-          outline: none;
-          border-color: var(--primary-color);
-          box-shadow: 0 0 0 3px var(--primary-glow);
+          padding: 0 10px;
+          height: 36px;
         }
 
         .search-icon {
-          position: absolute;
-          left: 14px;
-          top: 50%;
-          transform: translateY(-50%);
-          width: 18px;
-          height: 18px;
-          fill: #71717a;
+          width: 16px;
+          height: 16px;
+          fill: var(--text-muted);
+          margin-right: 8px;
         }
 
-        .filter-tabs {
-          display: flex;
-          background: rgba(0, 0, 0, 0.2);
-          padding: 4px;
-          border-radius: 8px;
-          border: 1px solid var(--border-color);
-        }
-
-        .filter-tab {
-          flex-grow: 1;
-          text-align: center;
-          padding: 8px 12px;
-          border-radius: 6px;
-          font-size: 0.8rem;
-          font-weight: 600;
-          color: #a1a1aa;
-          cursor: pointer;
-          transition: all 0.2s;
-          user-select: none;
-        }
-
-        .filter-tab.active {
-          background: rgba(255, 255, 255, 0.08);
-          color: #fff;
-        }
-
-        .scripts-scrollable {
-          flex-grow: 1;
-          overflow-y: auto;
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          padding-right: 4px;
-        }
-
-        /* Custom Scrollbar */
-        .scripts-scrollable::-webkit-scrollbar, .panel-body::-webkit-scrollbar, .console-body::-webkit-scrollbar {
-          width: 6px;
-        }
-        .scripts-scrollable::-webkit-scrollbar-track, .panel-body::-webkit-scrollbar-track, .console-body::-webkit-scrollbar-track {
+        .search-input {
           background: transparent;
-        }
-        .scripts-scrollable::-webkit-scrollbar-thumb, .panel-body::-webkit-scrollbar-thumb, .console-body::-webkit-scrollbar-thumb {
-          background: rgba(255, 255, 255, 0.1);
-          border-radius: 3px;
-        }
-
-        .script-item-card {
-          background: var(--bg-card);
-          border: 1px solid var(--border-color);
-          border-radius: 12px;
-          padding: 16px;
-          cursor: pointer;
-          transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-          display: flex;
-          align-items: center;
-          gap: 14px;
+          border: none;
+          color: var(--text-main);
+          outline: none;
+          width: 100%;
+          font-size: 0.85rem;
         }
 
-        .script-item-card:hover {
-          border-color: rgba(255, 255, 255, 0.15);
-          transform: translateY(-2px);
-          background: rgba(45, 45, 50, 0.6);
-        }
-
-        .script-item-card.selected {
-          border-color: var(--primary-color);
-          background: rgba(3, 169, 244, 0.05);
-          box-shadow: 0 0 15px rgba(3, 169, 244, 0.1);
-        }
-
-        .script-icon-box {
-          width: 40px;
-          height: 40px;
-          background: rgba(255, 255, 255, 0.05);
+        .btn-add {
+          background: var(--primary-color);
+          border: none;
           border-radius: 8px;
+          width: 36px;
+          height: 36px;
           display: flex;
           align-items: center;
           justify-content: center;
-          color: var(--primary-color);
+          color: #fff;
+          cursor: pointer;
+          box-shadow: 0 3px 8px var(--primary-glow);
+          transition: background 0.2s;
+        }
+
+        .btn-add:hover {
+          opacity: 0.9;
+        }
+
+        .list-scrollable {
+          flex-grow: 1;
+          overflow-y: auto;
+        }
+
+        .script-card {
+          display: flex;
+          align-items: flex-start;
+          padding: 14px 16px;
+          border-bottom: 1px solid var(--border-color);
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .script-card:hover {
+          background: var(--primary-hover);
+        }
+
+        .script-card.selected {
+          background: var(--card-selected-bg);
+          box-shadow: inset 4px 0 0 0 var(--primary-color);
+        }
+
+        .status-indicator {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          margin-top: 5px;
+          margin-right: 12px;
           flex-shrink: 0;
         }
 
-        .script-icon-box.system {
-          color: var(--accent-color);
-        }
+        .status-indicator.active { background: var(--success-color); }
+        .status-indicator.inactive { background: var(--text-muted); }
 
         .script-meta {
+          flex-grow: 1;
           min-width: 0;
         }
 
-        .script-title {
-          font-weight: 700;
-          font-size: 0.95rem;
-          margin: 0;
+        .card-header-row {
           display: flex;
-          align-items: center;
-          gap: 6px;
+          justify-content: space-between;
+          align-items: baseline;
+          margin: 0;
         }
 
-        .script-desc {
-          margin: 3px 0 0 0;
-          font-size: 0.8rem;
-          color: #71717a;
+        .card-title {
+          font-size: 0.85rem;
+          font-weight: 600;
+          color: var(--text-main);
+          margin: 0;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
 
-        /* Script Details App-like Drawer Panel */
-        .script-details-panel {
+        .card-time {
+          font-size: 0.72rem;
+          color: var(--text-muted);
+          flex-shrink: 0;
+          margin-left: 8px;
+        }
+
+        /* Column 3: Right workspace area */
+        .right-workspace {
           flex-grow: 1;
-          background: var(--bg-card);
-          border: 1px solid var(--border-color);
-          border-radius: 16px;
+          background: var(--bg-dark);
           display: flex;
           flex-direction: column;
           overflow: hidden;
-          box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
         }
 
-        .panel-header {
-          padding: 24px;
+        /* Top Workspace Bar (matching the screenshot header tabs) */
+        .workspace-header {
+          height: 64px;
           border-bottom: 1px solid var(--border-color);
-          background: rgba(0, 0, 0, 0.15);
           display: flex;
+          align-items: center;
           justify-content: space-between;
-          align-items: flex-start;
+          padding: 0 24px;
+          background: var(--bg-sidebar);
+          flex-shrink: 0;
         }
 
-        .panel-header-title h2 {
+        .workspace-title-info {
+          display: flex;
+          flex-direction: column;
+        }
+
+        .workspace-title {
+          font-size: 0.95rem;
+          font-weight: 700;
           margin: 0;
-          font-size: 1.3rem;
-          font-weight: 700;
+          color: var(--text-main);
         }
 
-        .panel-header-title p {
-          margin: 4px 0 0 0;
-          font-size: 0.85rem;
-          color: #a1a1aa;
+        .workspace-subtitle {
+          font-size: 0.72rem;
+          color: var(--text-muted);
+          margin: 2px 0 0 0;
         }
 
-        .panel-body {
-          flex-grow: 1;
-          overflow-y: auto;
-          padding: 28px;
-        }
-
-        .form-section-title {
-          font-size: 0.85rem;
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 1px;
-          color: #71717a;
-          margin: 0 0 20px 0;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-          padding-bottom: 8px;
-        }
-
-        /* Form styling */
-        .form-group {
-          margin-bottom: 20px;
-        }
-
-        .form-label {
-          display: block;
-          font-size: 0.85rem;
-          font-weight: 600;
-          margin-bottom: 6px;
-          color: #e1e1e6;
-        }
-
-        .form-label span.required {
-          color: var(--error-color);
-          margin-left: 2px;
-        }
-
-        .form-desc {
-          font-size: 0.78rem;
-          color: #71717a;
-          margin: 0 0 8px 0;
-        }
-
-        .field-input {
-          width: 100%;
-          background: rgba(0, 0, 0, 0.2);
-          border: 1px solid var(--border-color);
-          border-radius: 8px;
-          padding: 10px 12px;
-          color: #fff;
-          font-size: 0.85rem;
-          font-family: inherit;
-          box-sizing: border-box;
-          transition: all 0.2s;
-        }
-
-        .field-input:focus {
-          outline: none;
-          border-color: var(--primary-color);
-          box-shadow: 0 0 0 2px var(--primary-glow);
-        }
-
-        .field-select {
-          width: 100%;
-          background: rgba(0, 0, 0, 0.2);
-          border: 1px solid var(--border-color);
-          border-radius: 8px;
-          padding: 10px 12px;
-          color: #fff;
-          font-size: 0.85rem;
-          font-family: inherit;
-          box-sizing: border-box;
-          cursor: pointer;
-        }
-
-        .checkbox-container {
+        .workspace-controls {
           display: flex;
           align-items: center;
           gap: 12px;
-          cursor: pointer;
-          user-select: none;
-          font-size: 0.85rem;
         }
 
-        .checkbox-input {
-          width: 18px;
-          height: 18px;
-          accent-color: var(--primary-color);
-          cursor: pointer;
+        /* Toggle Button Group (Visual / Code) */
+        .toggle-group {
+          display: flex;
+          background: var(--search-bg);
+          border-radius: 6px;
+          padding: 2px;
         }
 
-        .range-container {
+        .toggle-btn {
+          border: none;
+          background: transparent;
+          color: var(--text-muted);
+          padding: 6px 14px;
+          border-radius: 4px;
+          font-size: 0.78rem;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .toggle-btn.active {
+          background: var(--primary-color);
+          color: #fff;
+          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+        }
+
+        .action-icon-btn {
+          background: transparent;
+          border: none;
+          color: var(--text-muted);
+          cursor: pointer;
+          padding: 6px;
           display: flex;
           align-items: center;
-          gap: 16px;
+          justify-content: center;
+          border-radius: 4px;
+          transition: all 0.2s;
+        }
+
+        .action-icon-btn:hover {
+          color: var(--text-main);
+          background: var(--primary-hover);
+        }
+
+        .workspace-scrollable {
+          flex-grow: 1;
+          overflow-y: auto;
+          padding: 24px;
+          box-sizing: border-box;
+        }
+
+        /* Empty state (matching visual style of the screenshot) */
+        .empty-workspace-state {
+          flex-grow: 1;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          color: var(--text-muted);
+          padding: 40px;
+        }
+
+        .empty-icon-box {
+          margin-bottom: 20px;
+          color: var(--primary-hover);
+        }
+
+        .empty-heading {
+          font-size: 1.1rem;
+          font-weight: 600;
+          color: var(--text-main);
+          margin: 0 0 6px 0;
+        }
+
+        .empty-text {
+          font-size: 0.82rem;
+          margin: 0;
+          color: var(--text-muted);
+          text-align: center;
+          max-width: 300px;
+          line-height: 1.4;
+        }
+
+        /* Code Editor Tab */
+        .editor-workspace {
+          display: flex;
+          flex-direction: column;
+          height: 100%;
+        }
+
+        .code-editor-container {
+          flex-grow: 1;
+          display: flex;
+          background: var(--editor-bg);
+          border: 1px solid var(--border-color);
+          border-radius: 8px;
+          overflow: hidden;
+          font-family: 'Fira Code', 'Courier New', Courier, monospace;
+          font-size: 0.85rem;
+          position: relative;
+        }
+
+        .line-numbers {
+          padding: 16px 10px;
+          background: var(--editor-lines-bg);
+          border-right: 1px solid var(--border-color);
+          color: var(--editor-lines-text);
+          text-align: right;
+          user-select: none;
+          overflow-y: hidden;
+          display: flex;
+          flex-direction: column;
+          line-height: 1.5;
+        }
+
+        .line-numbers div {
+          height: 20px;
+        }
+
+        .code-textarea {
+          flex-grow: 1;
+          background: transparent;
+          border: none;
+          color: var(--editor-text);
+          padding: 16px;
+          line-height: 1.5;
+          font-family: inherit;
+          font-size: inherit;
+          resize: none;
+          outline: none;
+          overflow-y: auto;
+          white-space: pre;
+        }
+
+        .editor-actions-bar {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-top: 16px;
+          flex-shrink: 0;
+        }
+
+        .editor-status {
+          font-size: 0.75rem;
+          color: var(--text-muted);
+        }
+
+        .editor-buttons {
+          display: flex;
+          gap: 12px;
+        }
+
+        .btn-action-primary {
+          background: var(--primary-color);
+          border: none;
+          color: #fff;
+          font-weight: 600;
+          font-size: 0.8rem;
+          padding: 8px 16px;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: background 0.2s;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .btn-action-primary:hover {
+          opacity: 0.9;
+        }
+
+        .btn-action-primary:disabled {
+          background: var(--border-color);
+          color: var(--text-muted);
+          cursor: not-allowed;
+        }
+
+        .btn-action-secondary {
+          background: var(--btn-secondary-bg);
+          border: 1px solid var(--border-color);
+          color: var(--btn-secondary-text);
+          font-weight: 600;
+          font-size: 0.8rem;
+          padding: 8px 16px;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .btn-action-secondary:hover {
+          background: var(--btn-secondary-hover);
+          color: var(--text-main);
+        }
+
+        /* Visual Cockpit / Form Execution Tab */
+        .visual-cockpit {
+          display: flex;
+          flex-direction: column;
+          gap: 24px;
+        }
+
+        .card-panel {
+          background: var(--bg-sidebar);
+          border: 1px solid var(--border-color);
+          border-radius: 8px;
+          padding: 20px;
+        }
+
+        .panel-heading {
+          font-size: 0.85rem;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--text-main);
+          margin: 0 0 16px 0;
+          border-bottom: 1px solid var(--border-color);
+          padding-bottom: 10px;
+        }
+
+        .form-row {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          margin-bottom: 16px;
+        }
+
+        .form-label {
+          font-size: 0.8rem;
+          font-weight: 600;
+          color: var(--text-main);
+        }
+
+        .form-input-text {
+          background: var(--search-bg);
+          border: 1px solid var(--border-color);
+          color: var(--text-main);
+          padding: 8px 12px;
+          border-radius: 6px;
+          font-size: 0.85rem;
+          outline: none;
+        }
+
+        .form-input-text:focus {
+          border-color: var(--primary-color);
+        }
+
+        .range-slider-wrapper {
+          display: flex;
+          align-items: center;
+          gap: 12px;
         }
 
         .range-slider {
@@ -499,607 +859,589 @@ class PyscryptManagerPanel extends HTMLElement {
           accent-color: var(--primary-color);
         }
 
-        .range-value {
-          font-size: 0.9rem;
-          font-weight: 700;
-          color: var(--primary-color);
-          min-width: 40px;
-          text-align: right;
+        .slider-val {
+          font-family: monospace;
+          font-size: 0.85rem;
+          color: var(--text-main);
+          min-width: 32px;
         }
 
-        /* Run Console Panel */
-        .btn-run {
-          background: linear-gradient(135deg, #0288d1 0%, #26c6da 100%);
-          border: none;
-          color: white;
-          padding: 12px 24px;
-          font-size: 0.95rem;
-          font-weight: 700;
-          border-radius: 8px;
-          cursor: pointer;
+        .checkbox-wrapper {
           display: flex;
           align-items: center;
           gap: 10px;
-          transition: all 0.2s ease;
-          box-shadow: 0 4px 15px rgba(3, 169, 244, 0.3);
+          margin-top: 4px;
         }
 
-        .btn-run:hover {
-          filter: brightness(1.1);
-          transform: translateY(-1px);
-          box-shadow: 0 6px 18px rgba(3, 169, 244, 0.45);
+        .checkbox-input {
+          accent-color: var(--primary-color);
+          width: 16px;
+          height: 16px;
+          cursor: pointer;
         }
 
-        .btn-run:active {
-          transform: translateY(0);
-        }
-
-        .btn-run:disabled {
-          background: rgba(255, 255, 255, 0.08);
-          color: #71717a;
-          cursor: not-allowed;
-          box-shadow: none;
-          transform: none;
-        }
-
-        /* Console Output styles */
-        .console-panel {
-          margin-top: 28px;
-          border-radius: 10px;
-          background: #0d0e15;
+        /* Console styling */
+        .console-container {
+          display: flex;
+          flex-direction: column;
+          background: var(--console-bg);
           border: 1px solid var(--border-color);
+          border-radius: 8px;
+          height: 240px;
           overflow: hidden;
-          font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
         }
 
         .console-header {
-          background: #141622;
-          padding: 10px 16px;
+          background: var(--bg-sidebar);
+          padding: 8px 16px;
+          border-bottom: 1px solid var(--border-color);
           display: flex;
           align-items: center;
           justify-content: space-between;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-          user-select: none;
-        }
-
-        .console-title {
-          color: #a1a1aa;
+          font-size: 0.72rem;
           font-weight: 700;
-          font-size: 0.75rem;
+          color: var(--text-muted);
           text-transform: uppercase;
-          letter-spacing: 1px;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .console-dot {
-          width: 8px;
-          height: 8px;
-          border-radius: 50%;
-          background: #ff5f56;
-          display: inline-block;
-        }
-
-        .console-dot.success {
-          background: var(--success-color);
         }
 
         .console-body {
-          padding: 16px;
-          max-height: 220px;
-          overflow-y: auto;
-          white-space: pre-wrap;
-          font-size: 0.8rem;
-          color: #a8ff60;
-        }
-
-        .console-body.error {
-          color: #ff5f56;
-        }
-
-        .console-body.empty {
-          color: rgba(255, 255, 255, 0.3);
-          font-style: italic;
-        }
-
-        /* Empty state placeholders */
-        .empty-placeholder {
           flex-grow: 1;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          color: #71717a;
-          text-align: center;
-          padding: 48px;
+          padding: 16px;
+          overflow-y: auto;
         }
 
-        .placeholder-icon {
-          width: 64px;
-          height: 64px;
-          fill: currentColor;
-          margin-bottom: 16px;
-          opacity: 0.3;
+        /* Utils */
+        .spin {
+          animation: spin-anim 1s linear infinite;
         }
 
-        .placeholder-title {
-          font-size: 1.1rem;
-          font-weight: 700;
-          margin-bottom: 8px;
-          color: #a1a1aa;
-        }
-
-        /* Error state */
-        .error-overlay {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          padding: 64px;
-          text-align: center;
-          color: #ff8a80;
-        }
-
-        .error-icon {
-          width: 48px;
-          height: 48px;
-          fill: currentColor;
-          margin-bottom: 16px;
-        }
-
-        /* Footer Info */
-        .footer-info {
-          font-size: 0.75rem;
-          color: #52525b;
-          text-align: center;
-          border-top: 1px solid var(--border-color);
-          padding-top: 16px;
-          margin-top: 16px;
+        @keyframes spin-anim {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
         }
       </style>
 
-      <div class="app-container">
-        <!-- Sidebar Navigation -->
-        <div class="sidebar">
-          <div>
-            <div class="brand-header">
-              <div class="logo-container">
-                <svg class="logo-svg" viewBox="0 0 110 110">
-                  <path fill="#306998" d="M54.2 10.4c-17.6 0-16.5 7.6-16.5 7.6l.1 7.9h16.7v2.3H17.8s-7.6-1.1-7.6 16.5c0 17.6 6.8 16.9 6.8 16.9h4.1v-5.7c0-9.6 8.3-9 8.3-9h16.9c9.3 0 8.6-8.3 8.6-8.3v-17s1.3-11.2-10.7-11.2z"/>
-                  <path fill="#ffd43b" d="M54.8 98.6c17.6 0 16.5-7.6 16.5-7.6l-.1-7.9H54.5v-2.3h36.7s7.6 1.1 7.6-16.5c0-17.6-6.8-16.9-6.8-16.9h-4.1v5.7c0 9.6-8.3 9-8.3 9H62.7c-9.3 0-8.6 8.3-8.6 8.3v17s-1.3 11.2 10.7 11.2z"/>
-                  <circle cx="28.4" cy="22.2" r="3.2" fill="#fff"/>
-                  <circle cx="80.6" cy="86.8" r="3.2" fill="#111"/>
-                </svg>
-              </div>
-              <div class="brand-title">
-                <h1>Pyscrypt Manager</h1>
-                <p>Dedicated Python App</p>
-              </div>
+      <div class="app-layout">
+        <!-- Column 1: Left Navigation Sidebar -->
+        <div class="left-sidebar">
+          <div class="brand-section">
+            <div class="logo-box">
+              <svg class="logo-img" viewBox="0 0 110 110">
+                <path fill="#306998" d="M54.2 10.4c-17.6 0-16.5 7.6-16.5 7.6l.1 7.9h16.7v2.3H17.8s-7.6-1.1-7.6 16.5c0 17.6 6.8 16.9 6.8 16.9h4.1v-5.7c0-9.6 8.3-9 8.3-9h16.9c9.3 0 8.6-8.3 8.6-8.3v-17s1.3-11.2-10.7-11.2z"/>
+                <path fill="#ffd43b" d="M54.8 98.6c17.6 0 16.5-7.6 16.5-7.6l-.1-7.9H54.5v-2.3h36.7s7.6 1.1 7.6-16.5c0-17.6-6.8-16.9-6.8-16.9h-4.1v5.7c0 9.6-8.3 9-8.3 9H62.7c-9.3 0-8.6 8.3-8.6 8.3v17s-1.3 11.2 10.7 11.2z"/>
+                <circle cx="28.4" cy="22.2" r="3.2" fill="#fff"/>
+                <circle cx="80.6" cy="86.8" r="3.2" fill="#111"/>
+              </svg>
             </div>
-
-            <div class="nav-menu">
-              <div class="nav-item active" id="nav-scripts">
-                <svg class="nav-icon" viewBox="0 0 24 24">
-                  <path d="M12.89,3L14.85,3.4L11.11,21L9.15,20.6L12.89,3M19.59,12L16,8.41V5.58L22.42,12L16,18.41V15.58L19.59,12M1.58,12L8,5.58V8.41L4.41,12L8,15.58V18.41L1.58,12Z" />
-                </svg>
-                Scripts Manager
-              </div>
+            <div class="brand-name">
+              <h1>Pyscrypt Manager</h1>
+              <p>Cockpit &amp; Code Editor</p>
             </div>
           </div>
 
-          <div class="footer-info">
-            Pyscrypt Manager v1.0.0
+          <!-- Folders -->
+          <div class="section-header">
+            <span>Folders</span>
+          </div>
+          <div class="nav-list" id="folders-nav-list">
+            <!-- Populated dynamically -->
           </div>
         </div>
 
-        <!-- Main Workspace Area -->
-        <div class="main-workspace">
-          <div class="top-app-bar">
-            <h2 class="page-title" id="page-heading">Scripts Manager</h2>
-            <div class="top-bar-actions">
-              <button class="btn-reload" id="btn-reload-all">
-                <svg class="nav-icon" viewBox="0 0 24 24" style="width:16px;height:16px;">
-                  <path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z" />
-                </svg>
-                Reload Pyscripts
-              </button>
+        <!-- Column 2: Middle Filtered List -->
+        <div class="middle-panel">
+          <div class="search-container">
+            <div class="search-wrap">
+              <svg class="search-icon" viewBox="0 0 24 24">
+                <path d="M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z"/>
+              </svg>
+              <input type="text" class="search-input" id="search-box" placeholder="Search scripts...">
             </div>
+            <button class="btn-add" id="btn-create-script" title="Create new script file">
+              <svg style="width:20px;height:20px;" viewBox="0 0 24 24">
+                <path fill="currentColor" d="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z"/>
+              </svg>
+            </button>
           </div>
 
-          <!-- Scripts Tab Content -->
-          <div class="tab-content active" id="content-scripts">
-            <div class="scripts-list-panel">
-              <div class="search-wrapper">
-                <svg class="search-icon" viewBox="0 0 24 24">
-                  <path d="M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z" />
-                </svg>
-                <input type="text" class="search-input" id="search-box" placeholder="Search scripts...">
-              </div>
-
-              <div class="filter-tabs">
-                <div class="filter-tab active" id="filter-all">All</div>
-                <div class="filter-tab" id="filter-custom">Custom</div>
-                <div class="filter-tab" id="filter-system">System</div>
-              </div>
-
-              <div class="scripts-scrollable" id="scripts-list">
-                <!-- Populated Dynamically -->
-              </div>
-            </div>
-
-            <!-- Details Display -->
-            <div class="script-details-panel" id="details-container">
-              <!-- Rendered Dynamically -->
-            </div>
+          <div class="list-scrollable" id="scripts-list">
+            <!-- Dynamic cards -->
           </div>
+        </div>
+
+        <!-- Column 3: Right Workspace Editor/Cockpit -->
+        <div class="right-workspace" id="right-workspace">
+          <!-- Populated by showWorkspace() -->
         </div>
       </div>
     `;
 
-    // Event Listeners
-    this.shadowRoot.getElementById('btn-reload-all').addEventListener('click', () => this.reloadAllPyscripts());
-    this.shadowRoot.getElementById('search-box').addEventListener('input', () => this.updatePanel());
-    
-    // Filter click listeners
-    const filters = ['all', 'custom', 'system'];
-    filters.forEach(f => {
-      this.shadowRoot.getElementById(`filter-${f}`).addEventListener('click', (e) => {
-        filters.forEach(filter => this.shadowRoot.getElementById(`filter-${filter}`).classList.remove('active'));
-        e.target.classList.add('active');
-        this.activeFilter = f;
-        this.updatePanel();
-      });
+    // Event Listeners for search & creation
+    this.shadowRoot.getElementById('search-box').addEventListener('input', (e) => {
+      this.searchQuery = e.target.value.toLowerCase().trim();
+      this.updatePanel();
     });
 
-    this.activeFilter = 'all';
-    this.selectedService = null;
-    this.results = {};
-    this.loading = {};
+    this.shadowRoot.getElementById('btn-create-script').addEventListener('click', () => {
+      this.createNewScript();
+    });
   }
 
-  async reloadAllPyscripts() {
-    const btn = this.shadowRoot.getElementById('btn-reload-all');
-    const svg = btn.querySelector('svg');
-    try {
-      svg.classList.add('spin');
-      btn.disabled = true;
-      await this._hass.callService('pyscript', 'reload', {});
-      
-      btn.style.borderColor = 'var(--success-color)';
-      btn.style.color = 'var(--success-color)';
-      setTimeout(() => {
-        btn.style.borderColor = '';
-        btn.style.color = '';
-      }, 1500);
-    } catch (err) {
-      console.error(err);
-      btn.style.borderColor = 'var(--error-color)';
-      btn.style.color = 'var(--error-color)';
-      setTimeout(() => {
-        btn.style.borderColor = '';
-        btn.style.color = '';
-      }, 1500);
-    } finally {
-      svg.classList.remove('spin');
-      btn.disabled = false;
+  updateSidebarActiveStates() {
+    this.shadowRoot.querySelectorAll('.nav-item').forEach(el => {
+      el.classList.remove('active');
+    });
+
+    if (this.selectedFolder) {
+      const el = this.shadowRoot.querySelector(`[data-folder="${this.selectedFolder}"]`);
+      if (el) el.classList.add('active');
+    } else {
+      const el = this.shadowRoot.querySelector('[data-folder="all"]');
+      if (el) el.classList.add('active');
     }
   }
 
   updatePanel() {
     if (!this._hass) return;
 
-    const pyscriptServices = this._hass.services.pyscript;
-    const searchBox = this.shadowRoot.getElementById('search-box');
-    const scriptsListEl = this.shadowRoot.getElementById('scripts-list');
-    const detailsContainer = this.shadowRoot.getElementById('details-container');
+    const pyscriptServices = this._hass.services.pyscript || {};
+    
+    // 1. Process files list & calculate sidebar aggregates (filtering out system scripts)
+    const folders = new Set();
+    const customFiles = this.files.filter(file => {
+      const serviceKey = this.getServiceKey(file.path);
+      const isSystem = ['reload', 'generate_stubs', 'jupyter_kernel_start'].includes(serviceKey);
+      return !isSystem;
+    });
 
-    if (!pyscriptServices) {
-      scriptsListEl.innerHTML = `
-        <div class="error-overlay">
-          <svg class="error-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
-          <h3>Pyscript Integration Not Found</h3>
-          <p>This dedicated app requires the Pyscript custom component to be installed in Home Assistant.</p>
+    customFiles.forEach(file => {
+      // Folder calculation
+      const parts = file.path.split('/');
+      const folderName = parts.length > 1 ? parts[0] : 'Root';
+      folders.add(folderName);
+    });
+
+    // Render Folders Navigation List
+    const foldersNav = this.shadowRoot.getElementById('folders-nav-list');
+    if (foldersNav) {
+      const folderList = Array.from(folders).sort();
+      let foldersHtml = `
+        <div class="nav-item ${!this.selectedFolder ? 'active' : ''}" data-folder="all">
+          <span>All Scripts</span>
+          <span class="badge">${customFiles.length}</span>
         </div>
       `;
-      detailsContainer.innerHTML = '';
-      return;
+      
+      foldersHtml += folderList.map(folder => {
+        const count = customFiles.filter(f => {
+          const parts = f.path.split('/');
+          const fName = parts.length > 1 ? parts[0] : 'Root';
+          return fName === folder;
+        }).length;
+        const isActive = this.selectedFolder === folder;
+        return `
+          <div class="nav-item ${isActive ? 'active' : ''}" data-folder="${folder}">
+            <span>${folder}</span>
+            <span class="badge">${count}</span>
+          </div>
+        `;
+      }).join('');
+      
+      foldersNav.innerHTML = foldersHtml;
+
+      foldersNav.querySelectorAll('[data-folder]').forEach(el => {
+        el.addEventListener('click', (e) => {
+          const val = e.currentTarget.getAttribute('data-folder');
+          this.selectedFolder = val === 'all' ? null : val;
+          this.updateSidebarActiveStates();
+          this.updatePanel();
+        });
+      });
     }
 
-    const query = searchBox ? searchBox.value.toLowerCase().trim() : '';
-    const keys = Object.keys(pyscriptServices).sort();
-
+    // 2. Filter & Render Middle List Cards
+    const scriptsListEl = this.shadowRoot.getElementById('scripts-list');
     let listHtml = '';
-    let visibleKeys = [];
 
-    keys.forEach(key => {
-      const data = pyscriptServices[key];
+    // Merge actual physical files and loose registered services (e.g. system commands)
+    const displayList = [];
+
+    // Add physical files
+    customFiles.forEach(file => {
+      const serviceKey = this.getServiceKey(file.path);
+      const data = pyscriptServices[serviceKey] || {};
+
+      displayList.push({
+        type: 'file',
+        path: file.path,
+        name: file.name,
+        serviceKey: serviceKey,
+        mtime: file.mtime,
+        size: file.size,
+        status: data ? 'active' : 'inactive' // active if loaded by HA core, else inactive
+      });
+    });
+
+    // Add loose services (e.g. custom services not backed by files)
+    Object.keys(pyscriptServices).forEach(key => {
       const isSystem = ['reload', 'generate_stubs', 'jupyter_kernel_start'].includes(key);
-      const name = data.name || key;
+      if (isSystem) return; // exclude system/built-in services completely
 
-      if (this.activeFilter === 'custom' && isSystem) return;
-      if (this.activeFilter === 'system' && !isSystem) return;
+      const hasFile = displayList.some(item => item.serviceKey === key);
+      if (!hasFile) {
+        displayList.push({
+          type: 'service',
+          path: null,
+          name: key,
+          serviceKey: key,
+          mtime: null,
+          size: 0,
+          status: 'active'
+        });
+      }
+    });
 
-      if (query) {
-        const matchName = name.toLowerCase().includes(query);
-        const matchKey = key.toLowerCase().includes(query);
-        const matchDesc = (data.description || '').toLowerCase().includes(query);
-        if (!matchName && !matchKey && !matchDesc) return;
+    // Filter displaying list
+    const filteredList = displayList.filter(item => {
+      // Search Box Filter
+      if (this.searchQuery) {
+        const matchName = item.name.toLowerCase().includes(this.searchQuery);
+        const matchKey = item.serviceKey.toLowerCase().includes(this.searchQuery);
+        if (!matchName && !matchKey) return false;
       }
 
-      visibleKeys.push(key);
-      const isSelected = this.selectedService === key;
+      // Folder Sidebar filter
+      if (this.selectedFolder) {
+        if (!item.path) return false;
+        const parts = item.path.split('/');
+        const fName = parts.length > 1 ? parts[0] : 'Root';
+        if (fName !== this.selectedFolder) return false;
+      }
 
-      const icon = isSystem
-        ? `<svg class="nav-icon" viewBox="0 0 24 24"><path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M12,6A6,6 0 0,0 6,12A6,6 0 0,0 12,18A6,6 0 0,0 18,12A6,6 0 0,0 12,6M12,8A4,4 0 0,1 16,12A4,4 0 0,1 12,16A4,4 0 0,1 8,12A4,4 0 0,1 12,8Z"/></svg>`
-        : `<svg class="nav-icon" viewBox="0 0 24 24"><path d="M12.89,3L14.85,3.4L11.11,21L9.15,20.6L12.89,3M19.59,12L16,8.41V5.58L22.42,12L16,18.41V15.58L19.59,12M1.58,12L8,5.58V8.41L4.41,12L8,15.58V18.41L1.58,12Z"/></svg>`;
-
-      listHtml += `
-        <div class="script-item-card ${isSelected ? 'selected' : ''}" data-key="${key}">
-          <div class="script-icon-box ${isSystem ? 'system' : ''}">
-            ${icon}
-          </div>
-          <div class="script-meta">
-            <h4 class="script-title">
-              ${name}
-              ${isSystem ? '<span style="font-size:0.65rem; background:rgba(255,152,0,0.15); color:var(--accent-color); padding:2px 6px; border-radius:4px;">System</span>' : ''}
-            </h4>
-            <p class="script-desc">${data.description || 'No description available'}</p>
-          </div>
-        </div>
-      `;
+      return true;
     });
+
+    // Sort: custom scripts sorted alphabetically
+    filteredList.sort((a, b) => a.name.localeCompare(b.name));
+
+    if (filteredList.length === 0) {
+      listHtml = `<div style="color:var(--text-muted); padding:32px 16px; text-align:center; font-size:0.85rem;">No scripts found.</div>`;
+    } else {
+      filteredList.forEach(item => {
+        const isSelected = (item.path && this.selectedFilePath === item.path) || (!item.path && this.selectedFilePath === item.serviceKey);
+        
+        let statusClass = 'inactive';
+        if (item.status === 'active') statusClass = 'active';
+
+        const sizeStr = item.size ? `${(item.size / 1024).toFixed(1)} KB` : '';
+        const mtimeStr = item.mtime ? this.formatRelativeTime(item.mtime) : '';
+        const rightLabel = sizeStr ? sizeStr : 'Custom';
+
+        listHtml += `
+          <div class="script-card ${isSelected ? 'selected' : ''}" data-path="${item.path || item.serviceKey}">
+            <div class="status-indicator ${statusClass}"></div>
+            <div class="script-meta">
+              <div class="card-header-row">
+                <h4 class="card-title">${item.name}</h4>
+                <span class="card-time">${mtimeStr || rightLabel}</span>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+    }
 
     scriptsListEl.innerHTML = listHtml;
 
-    // Attach click handlers
-    this.shadowRoot.querySelectorAll('.script-item-card').forEach(el => {
+    // Attach middle cards click handlers
+    scriptsListEl.querySelectorAll('.script-card').forEach(el => {
       el.addEventListener('click', (e) => {
-        const card = e.currentTarget;
-        this.selectedService = card.getAttribute('data-key');
-        this.updatePanel();
+        const path = e.currentTarget.getAttribute('data-path');
+        this.selectFile(path);
       });
     });
 
-    // Handle detail rendering
-    if (this.selectedService && pyscriptServices[this.selectedService]) {
-      this.renderDetails(this.selectedService, pyscriptServices[this.selectedService]);
-    } else {
-      detailsContainer.innerHTML = `
-        <div class="empty-placeholder">
-          <svg class="placeholder-icon" viewBox="0 0 24 24"><path d="M19,3H5C3.89,3 3,3.89 3,5V19C3,20.1 3.89,21 5,21H19C20.1,21 21,20.1 21,19V5C21,3.89 20.1,3 19,3M19,19H5V5H19V19M11,7H13V9H11V7M11,11H13V17H11V11Z"/></svg>
-          <div class="placeholder-title">No Script Selected</div>
-          <p style="margin:0; font-size:0.85rem;">Select a script from the list to configure and execute it.</p>
+    // 3. Render Right Workspace content
+    this.renderRightWorkspace(pyscriptServices);
+  }
+
+  formatRelativeTime(mtimeSeconds) {
+    if (!mtimeSeconds) return '';
+    const diffMs = Date.now() - (mtimeSeconds * 1000);
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return 'just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 30) return `${diffDays} days ago`;
+    return new Date(mtimeSeconds * 1000).toLocaleDateString();
+  }
+
+  renderRightWorkspace(pyscriptServices) {
+    const container = this.shadowRoot.getElementById('right-workspace');
+    if (!container) return;
+
+    if (!this.selectedFilePath) {
+      // Render Empty state matching the Dynatrace visual style
+      container.innerHTML = `
+        <div class="empty-workspace-state">
+          <div class="empty-icon-box">
+            <svg style="width:80px; height:80px;" viewBox="0 0 24 24">
+              <path fill="currentColor" d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M11,17H13V19H11V17M11,11H13V15H11V11" />
+            </svg>
+          </div>
+          <div class="empty-heading">Select an item to edit</div>
+          <p class="empty-text">Choose a Python script from the list, or click the create button in the list header to add a new script.</p>
         </div>
       `;
+      return;
     }
 
-    // Connect slider listeners if details are rendered
-    this.shadowRoot.querySelectorAll('.range-slider').forEach(slider => {
-      slider.addEventListener('input', (e) => {
-        const key = e.target.getAttribute('data-script');
-        const field = e.target.getAttribute('data-field');
-        const span = this.shadowRoot.getElementById(`val-${key}-${field}`);
-        if (span) {
-          span.textContent = e.target.value;
-        }
-      });
-    });
-  }
+    // Identify active selected item
+    const file = this.files.find(f => f.path === this.selectedFilePath);
+    const serviceKey = file ? this.getServiceKey(file.path) : this.selectedFilePath;
+    const serviceData = pyscriptServices[serviceKey];
 
-  renderDetails(key, data) {
-    const detailsContainer = this.shadowRoot.getElementById('details-container');
-    const isSystem = ['reload', 'generate_stubs', 'jupyter_kernel_start'].includes(key);
+    const titleName = file ? file.name : serviceKey;
+    const relativePath = file ? `pyscript/${file.path}` : `virtual.service/${serviceKey}`;
 
-    detailsContainer.innerHTML = `
-      <div class="panel-header">
-        <div class="panel-header-title">
-          <h2>${data.name || key}</h2>
-          <p>pyscript.${key}</p>
-        </div>
-        ${isSystem ? '<span style="font-size:0.75rem; background:rgba(255,152,0,0.15); color:var(--accent-color); padding:4px 8px; border-radius:4px; font-weight:700;">SYSTEM SCRIPT</span>' : ''}
-      </div>
+    // Generate workspace header and outline
+    let bodyHtml = '';
 
-      <div class="panel-body">
-        <p style="font-size:0.9rem; color:#a1a1aa; margin:0 0 28px 0; line-height:1.5;">${data.description || 'No description available for this python script.'}</p>
-        
-        <h4 class="form-section-title">Execution Arguments</h4>
-        
-        <div class="form-fields">
-          ${this.renderFields(key, data.fields)}
-        </div>
+    if (this.activeTab === 'visual') {
+      // Visual Execution Tab
+      let paramsFormHtml = '';
+      const fields = serviceData?.fields;
 
-        <div style="margin-top: 24px;">
-          <button class="btn-run" id="btn-run-${key}" ${this.loading[key] ? 'disabled' : ''}>
-            ${this.loading[key] ? '<div class="spinner"></div>' : `
-              <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:currentColor;"><path d="M8,5.14V19.14L19,12.14L8,5.14Z"/></svg>
-            `}
-            ${this.loading[key] ? 'Executing script...' : 'Execute Script'}
-          </button>
-        </div>
+      if (fields && Object.keys(fields).length > 0) {
+        paramsFormHtml = Object.keys(fields).map(fieldKey => {
+          const field = fields[fieldKey];
+          
+          let inputControl = '';
+          const uniqueId = `field-${serviceKey}-${fieldKey}`;
 
-        ${this.renderConsole(key)}
-      </div>
-    `;
+          // Form input element generation
+          if (field.selector && field.selector.number) {
+            const num = field.selector.number;
+            const min = num.min ?? 0;
+            const max = num.max ?? 100;
+            const step = num.step ?? 1;
+            const mode = num.mode ?? 'slider';
 
-    // Attach run trigger
-    this.shadowRoot.getElementById(`btn-run-${key}`).addEventListener('click', () => {
-      this.executeScript(key, data);
-    });
-  }
-
-  renderFields(scriptKey, fields) {
-    if (!fields || Object.keys(fields).length === 0) {
-      return `<p style="font-size:0.85rem; color:#71717a; font-style:italic; margin:0;">This script does not require any parameters.</p>`;
-    }
-
-    let html = '';
-    Object.keys(fields).forEach(name => {
-      const field = fields[name];
-      const required = field.required === true;
-      const desc = field.description || '';
-      const example = field.example ? `Example: ${field.example}` : '';
-      const defaultVal = field.default !== undefined ? field.default : '';
-      const inputId = `field-${scriptKey}-${name}`;
-
-      let selectorType = 'text';
-      let selectOptions = [];
-      let min = null, max = null, step = 1;
-
-      if (field.selector) {
-        if (field.selector.text) selectorType = 'text';
-        else if (field.selector.boolean) selectorType = 'boolean';
-        else if (field.selector.select) {
-          selectorType = 'select';
-          selectOptions = field.selector.select.options || [];
-        } else if (field.selector.number) {
-          selectorType = 'number';
-          min = field.selector.number.min;
-          max = field.selector.number.max;
-          step = field.selector.number.step || 1;
-        }
-      } else if (field.type) {
-        if (field.type.includes('select')) {
-          selectorType = 'select';
-          const match = field.type.match(/\(([^)]+)\)/);
-          if (match) selectOptions = match[1].split(',').map(o => o.trim());
-        } else if (field.type.includes('number')) {
-          selectorType = 'number';
-          const match = field.type.match(/\(([^)]+)\)/);
-          if (match) {
-            const range = match[1].split('-');
-            if (range.length === 2) {
-              min = parseFloat(range[0]);
-              max = parseFloat(range[1]);
+            if (mode === 'slider') {
+              inputControl = `
+                <div class="range-slider-wrapper">
+                  <input type="range" class="range-slider" id="${uniqueId}" min="${min}" max="${max}" step="${step}" value="${min}" data-field="${fieldKey}" data-script="${serviceKey}">
+                  <span class="slider-val" id="val-${serviceKey}-${fieldKey}">${min}</span>
+                </div>
+              `;
+            } else {
+              inputControl = `<input type="number" class="form-input-text" id="${uniqueId}" min="${min}" max="${max}" step="${step}" value="${min}">`;
             }
+          } else if (field.selector && field.selector.boolean) {
+            inputControl = `
+              <div class="checkbox-wrapper">
+                <input type="checkbox" class="checkbox-input" id="${uniqueId}">
+                <label class="form-label" style="font-weight:normal;" for="${uniqueId}">Enable parameter</label>
+              </div>
+            `;
+          } else {
+            // Text fallback
+            const defVal = field.default ?? '';
+            inputControl = `<input type="text" class="form-input-text" id="${uniqueId}" value="${defVal}" placeholder="Enter value...">`;
           }
-        } else if (field.type.includes('boolean')) {
-          selectorType = 'boolean';
-        }
-      }
 
-      html += `<div class="form-group">
-        <label class="form-label">${field.name || name} ${required ? '<span class="required">*</span>' : ''}</label>
-        ${desc ? `<p class="form-desc">${desc}</p>` : ''}
-      `;
-
-      if (selectorType === 'boolean') {
-        html += `
-          <label class="checkbox-container">
-            <input type="checkbox" class="checkbox-input" id="${inputId}" ${defaultVal ? 'checked' : ''}>
-            <span>Enable</span>
-          </label>
-        `;
-      } else if (selectorType === 'select') {
-        html += `
-          <select class="field-select" id="${inputId}">
-            ${selectOptions.map(opt => `<option value="${opt}" ${opt === defaultVal ? 'selected' : ''}>${opt}</option>`).join('')}
-          </select>
-        `;
-      } else if (selectorType === 'number' && min !== null && max !== null) {
-        html += `
-          <div class="range-container">
-            <input type="range" class="range-slider" id="${inputId}" min="${min}" max="${max}" step="${step}" value="${defaultVal !== '' ? defaultVal : min}" data-script="${scriptKey}" data-field="${name}">
-            <span class="range-value" id="val-${scriptKey}-${name}">${defaultVal !== '' ? defaultVal : min}</span>
+          return `
+            <div class="form-row">
+              <div class="form-label">${field.name || fieldKey} <span style="font-family:monospace; font-size:0.75rem; color:var(--text-muted); font-weight:normal;">(${fieldKey})</span></div>
+              ${inputControl}
+            </div>
+          `;
+        }).join('');
+      } else {
+        paramsFormHtml = `
+          <div style="color:var(--text-muted); font-size:0.82rem; padding:12px 0;">
+            This script does not require any execution parameters.
           </div>
         `;
-      } else if (selectorType === 'number') {
-        html += `<input type="number" class="field-input" id="${inputId}" value="${defaultVal}">`;
-      } else {
-        html += `<input type="text" class="field-input" id="${inputId}" value="${defaultVal}" placeholder="${example}">`;
       }
 
-      html += `</div>`;
-    });
+      bodyHtml = `
+        <div class="visual-cockpit">
+          <!-- Parameter Configuration Card -->
+          <div class="card-panel">
+            <div class="panel-heading">Service Fields / Arguments</div>
+            ${paramsFormHtml}
+            
+            <div style="margin-top:24px;">
+              <button class="btn-action-primary" id="btn-run-script">
+                <svg style="width:18px;height:18px;" viewBox="0 0 24 24">
+                  <path fill="currentColor" d="M8,5.14V19.14L19,12.14L8,5.14Z"/>
+                </svg>
+                Run Pyscript Service
+              </button>
+            </div>
+          </div>
 
-    return html;
-  }
-
-  renderConsole(key) {
-    const res = this.results[key];
-    let iconClass = '';
-    let title = 'Console Idle';
-    let content = 'Ready for script execution...';
-    let time = '';
-
-    if (this.loading[key]) {
-      title = 'Running';
-      content = 'Running script on Home Assistant event bus...\n';
-    } else if (res) {
-      title = res.success ? 'Success' : 'Failed';
-      iconClass = res.success ? 'success' : '';
-      time = `<span style="font-size:0.7rem; color:rgba(255,255,255,0.4);">${res.time}</span>`;
-      
-      if (res.success) {
-        content = res.data ? `Script finished successfully.\n\nResponse Payload:\n${JSON.stringify(res.data, null, 2)}` : 'Script executed successfully. Returned no output data.';
-      } else {
-        content = `Execution failed with error:\n${res.error}`;
-      }
+          <!-- Console Terminal Card -->
+          <div class="console-container">
+            <div class="console-header">
+              <span>Console Logs</span>
+              <span style="cursor:pointer;" id="btn-clear-console">Clear</span>
+            </div>
+            <div class="console-body" id="console-output">
+              <!-- Render console logs -->
+            </div>
+          </div>
+        </div>
+      `;
+    } else {
+      // Code Editor Tab
+      const isVirtual = !file;
+      const editorStatusText = isVirtual ? 'Virtual script. Editing disabled.' : `${relativePath}`;
+      bodyHtml = `
+        <div class="editor-workspace">
+          <div class="code-editor-container">
+            <div class="line-numbers" id="line-numbers">
+              <!-- Line numbers dynamic -->
+            </div>
+            <textarea class="code-textarea" id="code-textarea" spellcheck="false" ${isVirtual ? 'readonly' : ''}></textarea>
+          </div>
+          <div class="editor-actions-bar">
+            <span class="editor-status">${editorStatusText}</span>
+            <div class="editor-buttons">
+              <button class="btn-action-secondary" id="btn-reload-pyscripts">
+                <svg style="width:16px;height:16px;vertical-align:middle;margin-right:4px;" viewBox="0 0 24 24">
+                  <path fill="currentColor" d="M12,18A6,6 0 1,1 18,12A6,6 0 0,1 12,18M12,2A10,10 0 1,0 22,12A10,10 0 0,0 12,2Z"/>
+                </svg>
+                Reload Engine
+              </button>
+              <button class="btn-action-primary" id="btn-save" ${isVirtual ? 'disabled' : ''}>
+                <svg style="width:16px;height:16px;" viewBox="0 0 24 24">
+                  <path fill="currentColor" d="M15,9H5V5H15M12,19A3,3 0 0,1 9,16A3,3 0 0,1 12,13A3,3 0 0,1 15,16A3,3 0 0,1 12,19M17,3H5C3.89,3 3,3.9 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V7L17,3Z"/>
+                </svg>
+                Save Script
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
     }
 
-    return `
-      <div class="console-panel">
-        <div class="console-header">
-          <div class="console-title">
-            <span class="console-dot ${iconClass}"></span>
-            ${title}
-          </div>
-          ${time}
+    // Render Right Panel Scaffold
+    container.innerHTML = `
+      <!-- Workspace Header (matching visual tabs of the screenshot) -->
+      <div class="workspace-header">
+        <div class="workspace-title-info">
+          <h2 class="workspace-title">${titleName}</h2>
+          <span class="workspace-subtitle">${relativePath}</span>
         </div>
-        <div class="console-body ${!res && !this.loading[key] ? 'empty' : ''} ${res && !res.success ? 'error' : ''}">
-          ${content}
+        <div class="workspace-controls">
+          <div class="toggle-group">
+            <button class="toggle-btn ${this.activeTab === 'visual' ? 'active' : ''}" id="tab-visual-btn">Visual</button>
+            <button class="toggle-btn ${this.activeTab === 'code' ? 'active' : ''}" id="tab-code-btn">Code Editor</button>
+          </div>
         </div>
       </div>
+
+      <!-- Main Workspace Scroll Area -->
+      <div class="workspace-scrollable">
+        ${bodyHtml}
+      </div>
     `;
-  }
 
-  async executeScript(scriptKey, serviceData) {
-    const fields = serviceData.fields || {};
-    const params = {};
-
-    Object.keys(fields).forEach(name => {
-      const field = fields[name];
-      const el = this.shadowRoot.getElementById(`field-${scriptKey}-${name}`);
-      if (!el) return;
-
-      let value;
-      if (el.type === 'checkbox') {
-        value = el.checked;
-      } else if (el.type === 'range' || el.type === 'number') {
-        value = parseFloat(el.value);
-        if (isNaN(value)) value = undefined;
-      } else {
-        value = el.value;
-        if (value === '' && !field.required) value = undefined;
-      }
-
-      if (value !== undefined) {
-        params[name] = value;
-      }
+    // Connect event listeners
+    this.shadowRoot.getElementById('tab-visual-btn').addEventListener('click', () => {
+      this.activeTab = 'visual';
+      this.updatePanel();
     });
 
-    try {
-      this.loading[scriptKey] = true;
+    this.shadowRoot.getElementById('tab-code-btn').addEventListener('click', () => {
+      this.activeTab = 'code';
       this.updatePanel();
+      // Wait to populate code textarea & line numbers
+      setTimeout(() => {
+        const textarea = this.shadowRoot.getElementById('code-textarea');
+        if (textarea) {
+          textarea.value = this.selectedFileContent;
+          this.updateLineNumbers();
+          
+          // Attach code editor scroll syncing
+          const lineNumbers = this.shadowRoot.getElementById('line-numbers');
+          textarea.addEventListener('scroll', () => {
+            lineNumbers.scrollTop = textarea.scrollTop;
+          });
+          
+          textarea.addEventListener('input', () => {
+            this.isEditing = true;
+            this.selectedFileContent = textarea.value;
+            this.updateLineNumbers();
+          });
+        }
+      }, 50);
+    });
 
-      const response = await this._hass.callService('pyscript', scriptKey, params, undefined, true);
+    if (this.activeTab === 'visual') {
+      this.renderConsole();
 
-      this.results[scriptKey] = {
-        success: true,
-        data: response,
-        time: new Date().toLocaleTimeString()
-      };
-    } catch (err) {
-      console.error(err);
-      this.results[scriptKey] = {
-        success: false,
-        error: err.message || err,
-        time: new Date().toLocaleTimeString()
-      };
-    } finally {
-      this.loading[scriptKey] = false;
-      this.updatePanel();
+      const runBtn = this.shadowRoot.getElementById('btn-run-script');
+      if (runBtn) {
+        runBtn.addEventListener('click', () => {
+          this.runScript(serviceKey, serviceData?.fields);
+        });
+      }
+
+      const clearConsoleBtn = this.shadowRoot.getElementById('btn-clear-console');
+      if (clearConsoleBtn) {
+        clearConsoleBtn.addEventListener('click', () => {
+          this.consoleLogs = [];
+          this.renderConsole();
+        });
+      }
+
+      // Slider values sync
+      if (serviceData?.fields) {
+        Object.keys(serviceData.fields).forEach(fieldKey => {
+          const slider = this.shadowRoot.getElementById(`field-${serviceKey}-${fieldKey}`);
+          if (slider && slider.type === 'range') {
+            slider.addEventListener('input', (e) => {
+              const span = this.shadowRoot.getElementById(`val-${serviceKey}-${fieldKey}`);
+              if (span) span.textContent = e.target.value;
+            });
+          }
+        });
+      }
+    } else {
+      // Code Editor Tab buttons
+      const saveBtn = this.shadowRoot.getElementById('btn-save');
+      if (saveBtn) {
+        saveBtn.addEventListener('click', () => {
+          this.saveFile();
+        });
+      }
+
+      const reloadBtn = this.shadowRoot.getElementById('btn-reload-pyscripts');
+      if (reloadBtn) {
+        reloadBtn.addEventListener('click', () => {
+          this.reloadPyscripts();
+        });
+      }
     }
+  }
+
+  updateLineNumbers() {
+    const textarea = this.shadowRoot.getElementById('code-textarea');
+    const lineNumbers = this.shadowRoot.getElementById('line-numbers');
+    if (!textarea || !lineNumbers) return;
+
+    const lines = textarea.value.split('\n').length;
+    let numbers = '';
+    for (let i = 1; i <= lines; i++) {
+      numbers += `<div>${i}</div>`;
+    }
+    lineNumbers.innerHTML = numbers;
   }
 }
 
