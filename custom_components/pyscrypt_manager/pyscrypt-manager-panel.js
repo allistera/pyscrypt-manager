@@ -32,7 +32,7 @@ class PyscryptManagerPanel extends HTMLElement {
     this.activeTab = 'visual'; // 'visual' or 'code'
     
     // Filters
-    this.selectedFolder = null; // folder string or null
+    this.selectedFolder = ''; // folder string
     this.searchQuery = '';
     this.expandedFolders = {}; // path string -> boolean (true = expanded)
 
@@ -1094,10 +1094,8 @@ def ${path.split('/').pop().replace('.py', '')}():
       el.classList.remove('active');
     });
 
-    if (this.selectedFolder !== null) {
-      const el = this.shadowRoot.querySelector(`[data-folder-path="${this.selectedFolder}"]`);
-      if (el) el.classList.add('active');
-    }
+    const el = this.shadowRoot.querySelector(`[data-folder-path="${this.selectedFolder}"]`);
+    if (el) el.classList.add('active');
   }
 
   renderFolderNode(node, depth = 0) {
@@ -1203,13 +1201,8 @@ def ${path.split('/').pop().replace('.py', '')}():
             return;
           }
 
-          // Toggle folder selection
-          const targetFolder = folderPath;
-          if (this.selectedFolder === targetFolder) {
-            this.selectedFolder = null;
-          } else {
-            this.selectedFolder = targetFolder;
-          }
+          // Set selected folder path
+          this.selectedFolder = folderPath;
           this.updateSidebarActiveStates();
           this.updatePanel();
         });
