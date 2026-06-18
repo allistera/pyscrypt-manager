@@ -1,0 +1,9 @@
+{
+  "domain": "pyscrypt_manager",
+  "name": "Pyscrypt Manager",
+  "codeowners": ["@allistera"],
+  "documentation": "https://github.com/allistera/pyscrypt-manager",
+  "dependencies": ["frontend"],
+  "iot_class": "local_push",
+  "version": "1.0.0"
+}

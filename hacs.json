@@ -1,6 +1,6 @@
 {
-  "name": "Pyscrypt Manager Card",
-  "content_class": "plugin",
-  "filename": "pyscript-manager-card.js",
+  "name": "Pyscrypt Manager",
+  "content_class": "integration",
+  "domains": ["pyscrypt_manager"],
   "render_beta": true
 }

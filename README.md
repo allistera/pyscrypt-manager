@@ -1,60 +1,44 @@
 # Pyscrypt Manager
 
-A sleek, modern Home Assistant user interface and custom Lovelace card to list, configure, and execute Python scripts installed via the [pyscript](https://github.com/custom-components/pyscript) integration.
+A dedicated Home Assistant custom panel integration that provides a full-page sidebar application to list, configure, and execute Python scripts installed via the [pyscript](https://github.com/custom-components/pyscript) integration.
 
-Designed to be accessible directly from your Home Assistant sidebar as a dedicated panel/application.
+Unlike Lovelace dashboards, this runs as a **dedicated application** directly registered on your Home Assistant sidebar, offering a clean, distraction-free workspace.
 
 ![Aesthetic Preview](https://img.shields.io/badge/Design-Glassmorphic-blueviolet?style=for-the-badge)
 ![Home Assistant](https://img.shields.io/badge/Home_Assistant-2026.6.3+-blue?style=for-the-badge&logo=home-assistant)
 
 ## Features
 
-- 🐍 **Dynamic Script Listing**: Automatically reads all services from the `pyscript` domain and lists them.
-- ⚙️ **Automatic Argument Parsing**: Dynamically generates form controls based on the script's arguments/fields (e.g. text inputs, select dropdowns, toggle checkboxes, number sliders).
-- ⚡ **Interactive Run & Terminal Console**: Displays a beautiful glowing dark terminal-style console for each script, updating with success/failure feedback and returning JSON payload responses.
-- 🔄 **Quick Actions**: Features a direct "Reload All" action to trigger `pyscript.reload` and refresh your scripts instantly.
-- 🔍 **Filtering & Search**: Includes a real-time fuzzy search bar and filters to quickly distinguish between custom user scripts and system helper scripts (like `generate_stubs`).
-- 💎 **Premium Dark Glassmorphic Design**: Clean gradients, pulsing states, and smooth slide transitions.
+- 🐍 **Dedicated Sidebar App**: Registers as a native sidebar panel app (`/pyscrypt-manager`), bypassing the need for dashboard cards.
+- ⚙️ **Dynamic Argument Forms**: Translates script parameters (text inputs, selects, toggles, number sliders) into responsive UI form controls.
+- ⚡ **Interactive Terminal Console**: Shows real-time loader indicators, success/failure execution states, and formats returned JSON payload outputs.
+- 🔄 **Core Integration Controls**: Features a "Reload Pyscripts" trigger to refresh scripts instantly without leaving the app.
+- 🔍 **Fuzzy Searching & Filtering**: Search bar and quick-filters for custom user scripts vs. system helpers.
+- 💎 **Premium Glassmorphic Workspace**: Full-screen dark-themed dashboard tailored to high-density desktop displays.
 
 ## Installation & Setup
 
-We have automatically deployed the custom card and configured the sidebar panel in your Home Assistant instance. If you need to reinstall or replicate this manually, follow the steps below:
+We have automatically set up and copied the files to your local Home Assistant instance. If you need to replicate this manually, follow the steps below:
 
-### 1. Copy the Card File
-Copy the `pyscript-manager-card.js` file into your Home Assistant's `www` configuration folder:
+### 1. Copy the Custom Component
+Copy the `pyscrypt_manager` directory into your Home Assistant's `custom_components` directory:
 ```bash
-cp pyscript-manager-card.js /path/to/home-assistant/config/www/
+cp -r custom_components/pyscrypt_manager /path/to/home-assistant/config/custom_components/
 ```
 In your setup, the path is:
-`[home-assistant-config/www/pyscript-manager-card.js](file:///Users/allistera/Development/Projects/home-assistant-config/www/pyscript-manager-card.js)`
+`[home-assistant-config/custom_components/pyscrypt_manager](file:///Users/allistera/Development/Projects/home-assistant-config/custom_components/pyscrypt_manager)`
 
-### 2. Register Dashboard Resource
-Add `/local/pyscript-manager-card.js` as a dashboard resource of type `module` in Home Assistant:
-- Go to **Settings** > **Dashboards** > **Resources (three dots menu)**.
-- Click **Add Resource**.
-- Enter URL: `/local/pyscript-manager-card.js`
-- Select Resource Type: `JavaScript Module`.
-
-### 3. Create Sidebar Panel / Dashboard
-Add a new dashboard in your `configuration.yaml` or through the Lovelace UI:
-- **URL Path**: `pyscript-manager`
-- **Title**: `Pyscrypt Manager`
-- **Icon**: `mdi:language-python`
-- **Show in Sidebar**: Checked
-
-In the dashboard, edit the raw configuration and define it as a panel view with the custom card:
+### 2. Enable in Configuration
+Add the `pyscrypt_manager` domain configuration to your `configuration.yaml` file:
 ```yaml
-title: Pyscrypt Manager
-views:
-  - title: Pyscrypt Manager
-    type: panel
-    cards:
-      - type: custom:pyscript-manager-card
+pyscrypt_manager:
 ```
 
-## Developer Notes
+### 3. Restart Home Assistant
+Restart Home Assistant to load the integration. Once restarted, **Pyscrypt Manager** will automatically appear in your Home Assistant sidebar menu.
 
-This project was built using:
-- **Vanilla CSS & JS**: For robust rendering, zero dependency bloating, and compatibility.
-- **Custom SVG Assets**: CRISP vector graphics for icons, ensuring high-res compatibility.
-- **Shadow DOM**: Complete style isolation so that Home Assistant themes don't accidentally override the card's bespoke glassmorphic styles.
+## Repository Layout
+- `custom_components/pyscrypt_manager/`
+  - [__init__.py](file:///Users/allistera/Development/Projects/pyscrypt-manager/custom_components/pyscrypt_manager/__init__.py) — Bootstraps integration and registers sidebar panel.
+  - [manifest.json](file:///Users/allistera/Development/Projects/pyscrypt-manager/custom_components/pyscrypt_manager/manifest.json) — Home Assistant integration parameters.
+  - [pyscrypt-manager-panel.js](file:///Users/allistera/Development/Projects/pyscrypt-manager/custom_components/pyscrypt_manager/pyscrypt-manager-panel.js) — The HTML/CSS/JS frontend panel application.
