@@ -34,6 +34,7 @@ class PyscryptManagerPanel extends HTMLElement {
     // Filters
     this.selectedFolder = null; // folder string or null
     this.searchQuery = '';
+    this.expandedFolders = {}; // path string -> boolean (true = expanded)
 
     // Console output log
     this.consoleLogs = [];
@@ -80,13 +81,6 @@ class PyscryptManagerPanel extends HTMLElement {
     }
 
     this.updatePanel();
-    
-    // Update code editor numbers if active
-    if (this.activeTab === 'code') {
-      setTimeout(() => {
-        this.updateLineNumbers();
-      }, 50);
-    }
   }
 
   async saveFile() {
@@ -426,6 +420,50 @@ def ${path.split('/').pop().replace('.py', '')}():
         .nav-item.active .badge {
           background: var(--primary-color);
           color: #fff;
+        }
+
+        .caret-icon {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 14px;
+          height: 14px;
+          margin-right: 4px;
+          cursor: pointer;
+          color: var(--text-muted);
+          transition: transform 0.2s, color 0.2s;
+        }
+
+        .caret-icon:hover {
+          color: var(--text-main);
+        }
+
+        .caret-icon.expanded {
+          transform: rotate(90deg);
+        }
+
+        .caret-spacer {
+          display: inline-block;
+          width: 18px;
+          height: 14px;
+        }
+
+        .folder-icon {
+          display: inline-flex;
+          align-items: center;
+          color: var(--primary-color);
+        }
+
+        .folder-name-label {
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .folder-children-container {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
         }
 
         /* Column 2: Middle Filtered List */
@@ -993,12 +1031,59 @@ def ${path.split('/').pop().replace('.py', '')}():
     });
 
     if (this.selectedFolder) {
-      const el = this.shadowRoot.querySelector(`[data-folder="${this.selectedFolder}"]`);
+      const el = this.shadowRoot.querySelector(`[data-folder-path="${this.selectedFolder}"]`);
       if (el) el.classList.add('active');
     } else {
-      const el = this.shadowRoot.querySelector('[data-folder="all"]');
+      const el = this.shadowRoot.querySelector('[data-folder-path=""]');
       if (el) el.classList.add('active');
     }
+  }
+
+  renderFolderNode(node, depth = 0) {
+    const isExpanded = this.expandedFolders[node.path] !== false;
+    const hasChildren = Object.keys(node.children).length > 0;
+    
+    // Determine active state
+    // If selectedFolder is null/empty, the root node (node.path === '') is active
+    const isSelected = (this.selectedFolder === null && node.path === '') || (this.selectedFolder === node.path);
+    
+    const indent = depth * 12;
+    
+    const caret = hasChildren
+      ? `<span class="caret-icon ${isExpanded ? 'expanded' : ''}" data-toggle-path="${node.path}">
+           <svg style="width:14px;height:14px;vertical-align:middle;" viewBox="0 0 24 24">
+             <path fill="currentColor" d="M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z"/>
+           </svg>
+         </span>`
+      : `<span class="caret-spacer"></span>`;
+
+    const folderIcon = `
+      <span class="folder-icon">
+        <svg style="width:16px;height:16px;vertical-align:middle;margin-right:6px;" viewBox="0 0 24 24">
+          <path fill="currentColor" d="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z"/>
+        </svg>
+      </span>`;
+
+    let html = `
+      <div class="nav-item ${isSelected ? 'active' : ''}" style="padding-left: ${indent}px;" data-folder-path="${node.path}">
+        <div style="display:flex; align-items:center; flex-grow:1; min-width:0;">
+          ${caret}
+          ${folderIcon}
+          <span class="folder-name-label">${node.name}</span>
+        </div>
+        <span class="badge">${node.count}</span>
+      </div>
+    `;
+
+    if (hasChildren && isExpanded) {
+      html += `<div class="folder-children-container">`;
+      Object.keys(node.children).sort().forEach(childName => {
+        html += this.renderFolderNode(node.children[childName], depth + 1);
+      });
+      html += `</div>`;
+    }
+
+    return html;
   }
 
   updatePanel() {
@@ -1007,52 +1092,59 @@ def ${path.split('/').pop().replace('.py', '')}():
     const pyscriptServices = this._hass.services.pyscript || {};
     
     // 1. Process files list & calculate sidebar aggregates (filtering out system scripts)
-    const folders = new Set();
     const customFiles = this.files.filter(file => {
       const serviceKey = this.getServiceKey(file.path);
       const isSystem = ['reload', 'generate_stubs', 'jupyter_kernel_start'].includes(serviceKey);
       return !isSystem;
     });
 
+    // Build hierarchical tree
+    const rootNode = { name: 'All Scripts', path: '', children: {}, count: 0 };
     customFiles.forEach(file => {
-      // Folder calculation
       const parts = file.path.split('/');
-      const folderName = parts.length > 1 ? parts[0] : 'Root';
-      folders.add(folderName);
+      parts.pop(); // remove filename
+      
+      let currentNode = rootNode;
+      currentNode.count++;
+
+      let currentPath = '';
+      parts.forEach(part => {
+        currentPath = currentPath ? `${currentPath}/${part}` : part;
+        if (!currentNode.children[part]) {
+          currentNode.children[part] = {
+            name: part,
+            path: currentPath,
+            children: {},
+            count: 0
+          };
+        }
+        currentNode = currentNode.children[part];
+        currentNode.count++;
+      });
     });
 
-    // Render Folders Navigation List
+    // Render Folders Tree Navigation List
     const foldersNav = this.shadowRoot.getElementById('folders-nav-list');
     if (foldersNav) {
-      const folderList = Array.from(folders).sort();
-      let foldersHtml = `
-        <div class="nav-item ${!this.selectedFolder ? 'active' : ''}" data-folder="all">
-          <span>All Scripts</span>
-          <span class="badge">${customFiles.length}</span>
-        </div>
-      `;
-      
-      foldersHtml += folderList.map(folder => {
-        const count = customFiles.filter(f => {
-          const parts = f.path.split('/');
-          const fName = parts.length > 1 ? parts[0] : 'Root';
-          return fName === folder;
-        }).length;
-        const isActive = this.selectedFolder === folder;
-        return `
-          <div class="nav-item ${isActive ? 'active' : ''}" data-folder="${folder}">
-            <span>${folder}</span>
-            <span class="badge">${count}</span>
-          </div>
-        `;
-      }).join('');
-      
-      foldersNav.innerHTML = foldersHtml;
+      foldersNav.innerHTML = this.renderFolderNode(rootNode, 0);
 
-      foldersNav.querySelectorAll('[data-folder]').forEach(el => {
+      // Bind events
+      foldersNav.querySelectorAll('.nav-item').forEach(el => {
         el.addEventListener('click', (e) => {
-          const val = e.currentTarget.getAttribute('data-folder');
-          this.selectedFolder = val === 'all' ? null : val;
+          const folderPath = el.getAttribute('data-folder-path');
+          
+          // Check if the click was on the caret-icon
+          const caret = e.target.closest('.caret-icon');
+          if (caret) {
+            e.stopPropagation();
+            const path = caret.getAttribute('data-toggle-path');
+            this.expandedFolders[path] = this.expandedFolders[path] === false ? true : false;
+            this.updatePanel();
+            return;
+          }
+
+          // Otherwise select folder
+          this.selectedFolder = folderPath === '' ? null : folderPath;
           this.updateSidebarActiveStates();
           this.updatePanel();
         });
@@ -1113,9 +1205,10 @@ def ${path.split('/').pop().replace('.py', '')}():
       // Folder Sidebar filter
       if (this.selectedFolder) {
         if (!item.path) return false;
-        const parts = item.path.split('/');
-        const fName = parts.length > 1 ? parts[0] : 'Root';
-        if (fName !== this.selectedFolder) return false;
+        const prefix = this.selectedFolder + '/';
+        if (item.path !== this.selectedFolder && !item.path.startsWith(prefix)) {
+          return false;
+        }
       }
 
       return true;
@@ -1307,7 +1400,7 @@ def ${path.split('/').pop().replace('.py', '')}():
             <div class="line-numbers" id="line-numbers">
               <!-- Line numbers dynamic -->
             </div>
-            <textarea class="code-textarea" id="code-textarea" spellcheck="false" ${isVirtual ? 'readonly' : ''}></textarea>
+            <textarea class="code-textarea" id="code-textarea" spellcheck="false" ${isVirtual ? 'readonly' : ''}>${this.selectedFileContent}</textarea>
           </div>
           <div class="editor-actions-bar">
             <span class="editor-status">${editorStatusText}</span>
@@ -1361,27 +1454,27 @@ def ${path.split('/').pop().replace('.py', '')}():
     this.shadowRoot.getElementById('tab-code-btn').addEventListener('click', () => {
       this.activeTab = 'code';
       this.updatePanel();
-      // Wait to populate code textarea & line numbers
-      setTimeout(() => {
-        const textarea = this.shadowRoot.getElementById('code-textarea');
-        if (textarea) {
-          textarea.value = this.selectedFileContent;
-          this.updateLineNumbers();
-          
-          // Attach code editor scroll syncing
-          const lineNumbers = this.shadowRoot.getElementById('line-numbers');
-          textarea.addEventListener('scroll', () => {
-            lineNumbers.scrollTop = textarea.scrollTop;
-          });
-          
-          textarea.addEventListener('input', () => {
-            this.isEditing = true;
-            this.selectedFileContent = textarea.value;
-            this.updateLineNumbers();
-          });
-        }
-      }, 50);
     });
+
+    // Run Code Editor Setup synchronously if active
+    if (this.activeTab === 'code') {
+      const textarea = this.shadowRoot.getElementById('code-textarea');
+      if (textarea) {
+        this.updateLineNumbers();
+        
+        // Attach code editor scroll syncing
+        const lineNumbers = this.shadowRoot.getElementById('line-numbers');
+        textarea.addEventListener('scroll', () => {
+          lineNumbers.scrollTop = textarea.scrollTop;
+        });
+        
+        textarea.addEventListener('input', () => {
+          this.isEditing = true;
+          this.selectedFileContent = textarea.value;
+          this.updateLineNumbers();
+        });
+      }
+    }
 
     if (this.activeTab === 'visual') {
       this.renderConsole();
