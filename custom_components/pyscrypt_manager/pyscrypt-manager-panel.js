@@ -269,6 +269,15 @@ def ${path.split('/').pop().replace('.py', '')}():
           --btn-secondary-bg: #2a2a30;
           --btn-secondary-hover: rgba(255, 255, 255, 0.05);
           --btn-secondary-text: #f0f0f5;
+
+          /* Dark theme syntax colors */
+          --hl-comment: #7c7c90;
+          --hl-string: #00c6b7;
+          --hl-keyword: #1496ff;
+          --hl-decorator: #b8bbff;
+          --hl-function: #fbbf24;
+          --hl-builtin: #f0f0f5;
+          --hl-number: #f59e0b;
           
           display: block;
           width: 100%;
@@ -305,7 +314,25 @@ def ${path.split('/').pop().replace('.py', '')}():
           --btn-secondary-bg: #f2f2f5;
           --btn-secondary-hover: rgba(0, 0, 0, 0.04);
           --btn-secondary-text: #2d2e4e;
+
+          /* Light theme syntax colors */
+          --hl-comment: #8c8c9e;
+          --hl-string: #00877a;
+          --hl-keyword: #0066cc;
+          --hl-decorator: #5e35b1;
+          --hl-function: #d84315;
+          --hl-builtin: #2d2e4e;
+          --hl-number: #e65100;
         }
+
+        /* Syntax Highlight Classes */
+        .hl-comment { color: var(--hl-comment); font-style: italic; }
+        .hl-string { color: var(--hl-string); }
+        .hl-keyword { color: var(--hl-keyword); font-weight: 600; }
+        .hl-decorator { color: var(--hl-decorator); }
+        .hl-function { color: var(--hl-function); }
+        .hl-builtin { color: var(--hl-builtin); font-weight: 600; }
+        .hl-number { color: var(--hl-number); }
 
         .app-layout {
           display: flex;
@@ -753,25 +780,62 @@ def ${path.split('/').pop().replace('.py', '')}():
           display: flex;
           flex-direction: column;
           line-height: 1.5;
+          font-family: 'Fira Code', 'Courier New', Courier, monospace;
+          font-size: 0.85rem;
         }
 
         .line-numbers div {
-          height: 20px;
+          line-height: 1.5;
+        }
+
+        .code-editor-wrapper {
+          position: relative;
+          flex-grow: 1;
+          display: flex;
+          background: var(--editor-bg);
+          overflow: hidden;
+        }
+
+        .highlight-overlay {
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          margin: 0;
+          padding: 16px;
+          box-sizing: border-box;
+          pointer-events: none;
+          white-space: pre;
+          overflow: hidden;
+          font-family: 'Fira Code', 'Courier New', Courier, monospace;
+          font-size: 0.85rem;
+          line-height: 1.5;
+          color: var(--editor-text);
+          background: transparent;
         }
 
         .code-textarea {
-          flex-grow: 1;
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          margin: 0;
+          padding: 16px;
+          box-sizing: border-box;
           background: transparent;
           border: none;
-          color: var(--editor-text);
-          padding: 16px;
+          color: transparent;
+          caret-color: var(--text-main);
           line-height: 1.5;
-          font-family: inherit;
-          font-size: inherit;
+          font-family: 'Fira Code', 'Courier New', Courier, monospace;
+          font-size: 0.85rem;
           resize: none;
           outline: none;
-          overflow-y: auto;
+          overflow: auto;
           white-space: pre;
+          word-break: normal;
         }
 
         .editor-actions-bar {
@@ -1272,6 +1336,69 @@ def ${path.split('/').pop().replace('.py', '')}():
     return new Date(mtimeSeconds * 1000).toLocaleDateString();
   }
 
+  highlightPython(code) {
+    // Escape HTML
+    let html = code
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    // Placeholders collection
+    const placeholders = [];
+    
+    // 1. Triple quote strings (double and single)
+    html = html.replace(/(""\"[\s\S]*?""\")|(\'\'\'[\s\S]*?\'\'\')/g, (match) => {
+      const placeholder = `__PLACEHOLDER_${placeholders.length}__`;
+      placeholders.push({ placeholder, html: `<span class="hl-string">${match}</span>` });
+      return placeholder;
+    });
+
+    // 2. Single line strings (double and single)
+    html = html.replace(/("[^"\n]*")|('[^'\n]*')/g, (match) => {
+      const placeholder = `__PLACEHOLDER_${placeholders.length}__`;
+      placeholders.push({ placeholder, html: `<span class="hl-string">${match}</span>` });
+      return placeholder;
+    });
+
+    // 3. Comments
+    html = html.replace(/(#[^\n]*)/g, (match) => {
+      const placeholder = `__PLACEHOLDER_${placeholders.length}__`;
+      placeholders.push({ placeholder, html: `<span class="hl-comment">${match}</span>` });
+      return placeholder;
+    });
+
+    // Highlight decorators
+    html = html.replace(/(@\w+)/g, '<span class="hl-decorator">$1</span>');
+
+    // Highlight keywords
+    const keywords = /\b(def|class|return|if|else|elif|for|while|in|import|from|as|try|except|raise|and|or|not|is|lambda|pass|break|continue|global|nonlocal|assert|with|yield)\b/g;
+    html = html.replace(keywords, '<span class="hl-keyword">$1</span>');
+
+    // Highlight builtins
+    const builtins = /\b(self|True|False|None|log|print)\b/g;
+    html = html.replace(builtins, '<span class="hl-builtin">$1</span>');
+
+    // Highlight functions
+    html = html.replace(/\b(\w+)(?=\s*\()/g, '<span class="hl-function">$1</span>');
+
+    // Highlight numbers
+    html = html.replace(/\b(\d+)\b/g, '<span class="hl-number">$1</span>');
+
+    // Restore placeholders
+    for (let i = placeholders.length - 1; i >= 0; i--) {
+      html = html.replace(placeholders[i].placeholder, placeholders[i].html);
+    }
+
+    return html;
+  }
+
+  updateHighlighting() {
+    const codeEl = this.shadowRoot.getElementById('highlight-code');
+    if (codeEl) {
+      codeEl.innerHTML = this.highlightPython(this.selectedFileContent);
+    }
+  }
+
   renderRightWorkspace(pyscriptServices) {
     const container = this.shadowRoot.getElementById('right-workspace');
     if (!container) return;
@@ -1400,7 +1527,10 @@ def ${path.split('/').pop().replace('.py', '')}():
             <div class="line-numbers" id="line-numbers">
               <!-- Line numbers dynamic -->
             </div>
-            <textarea class="code-textarea" id="code-textarea" spellcheck="false" ${isVirtual ? 'readonly' : ''}>${this.selectedFileContent}</textarea>
+            <div class="code-editor-wrapper">
+              <pre class="highlight-overlay" id="highlight-overlay"><code class="python-code" id="highlight-code"></code></pre>
+              <textarea class="code-textarea" id="code-textarea" spellcheck="false" ${isVirtual ? 'readonly' : ''}></textarea>
+            </div>
           </div>
           <div class="editor-actions-bar">
             <span class="editor-status">${editorStatusText}</span>
@@ -1459,19 +1589,49 @@ def ${path.split('/').pop().replace('.py', '')}():
     // Run Code Editor Setup synchronously if active
     if (this.activeTab === 'code') {
       const textarea = this.shadowRoot.getElementById('code-textarea');
+      const highlightOverlay = this.shadowRoot.getElementById('highlight-overlay');
       if (textarea) {
+        textarea.value = this.selectedFileContent;
         this.updateLineNumbers();
+        this.updateHighlighting();
         
         // Attach code editor scroll syncing
         const lineNumbers = this.shadowRoot.getElementById('line-numbers');
         textarea.addEventListener('scroll', () => {
           lineNumbers.scrollTop = textarea.scrollTop;
+          if (highlightOverlay) {
+            highlightOverlay.scrollTop = textarea.scrollTop;
+            highlightOverlay.scrollLeft = textarea.scrollLeft;
+          }
         });
         
         textarea.addEventListener('input', () => {
           this.isEditing = true;
           this.selectedFileContent = textarea.value;
           this.updateLineNumbers();
+          this.updateHighlighting();
+        });
+
+        // Tab key support
+        textarea.addEventListener('keydown', (e) => {
+          if (e.key === 'Tab') {
+            e.preventDefault();
+            const start = textarea.selectionStart;
+            const end = textarea.selectionEnd;
+            const val = textarea.value;
+
+            // Insert 4 spaces
+            textarea.value = val.substring(0, start) + '    ' + val.substring(end);
+
+            // Put caret at right position
+            textarea.selectionStart = textarea.selectionEnd = start + 4;
+
+            // Trigger updates
+            this.isEditing = true;
+            this.selectedFileContent = textarea.value;
+            this.updateLineNumbers();
+            this.updateHighlighting();
+          }
         });
       }
     }
