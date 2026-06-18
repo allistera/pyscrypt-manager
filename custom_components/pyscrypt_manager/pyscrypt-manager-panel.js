@@ -1094,11 +1094,8 @@ def ${path.split('/').pop().replace('.py', '')}():
       el.classList.remove('active');
     });
 
-    if (this.selectedFolder) {
+    if (this.selectedFolder !== null) {
       const el = this.shadowRoot.querySelector(`[data-folder-path="${this.selectedFolder}"]`);
-      if (el) el.classList.add('active');
-    } else {
-      const el = this.shadowRoot.querySelector('[data-folder-path=""]');
       if (el) el.classList.add('active');
     }
   }
@@ -1169,7 +1166,6 @@ def ${path.split('/').pop().replace('.py', '')}():
       parts.pop(); // remove filename
       
       let currentNode = rootNode;
-      currentNode.count++;
 
       let currentPath = '';
       parts.forEach(part => {
@@ -1183,8 +1179,8 @@ def ${path.split('/').pop().replace('.py', '')}():
           };
         }
         currentNode = currentNode.children[part];
-        currentNode.count++;
       });
+      currentNode.count++;
     });
 
     // Render Folders Tree Navigation List
@@ -1207,8 +1203,13 @@ def ${path.split('/').pop().replace('.py', '')}():
             return;
           }
 
-          // Otherwise select folder
-          this.selectedFolder = folderPath === '' ? null : folderPath;
+          // Toggle folder selection
+          const targetFolder = folderPath;
+          if (this.selectedFolder === targetFolder) {
+            this.selectedFolder = null;
+          } else {
+            this.selectedFolder = targetFolder;
+          }
           this.updateSidebarActiveStates();
           this.updatePanel();
         });
@@ -1266,11 +1267,13 @@ def ${path.split('/').pop().replace('.py', '')}():
         if (!matchName && !matchKey) return false;
       }
 
-      // Folder Sidebar filter
-      if (this.selectedFolder) {
+      // Folder Sidebar filter (only show scripts directly in selected folder)
+      if (this.selectedFolder !== null) {
         if (!item.path) return false;
-        const prefix = this.selectedFolder + '/';
-        if (item.path !== this.selectedFolder && !item.path.startsWith(prefix)) {
+        const parts = item.path.split('/');
+        parts.pop(); // remove filename
+        const itemFolder = parts.join('/');
+        if (itemFolder !== this.selectedFolder) {
           return false;
         }
       }
