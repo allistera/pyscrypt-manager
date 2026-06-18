@@ -7,6 +7,10 @@ Unlike Lovelace dashboards, this runs as a **dedicated application** directly re
 ![Aesthetic Preview](https://img.shields.io/badge/Design-Glassmorphic-blueviolet?style=for-the-badge)
 ![Home Assistant](https://img.shields.io/badge/Home_Assistant-2026.6.3+-blue?style=for-the-badge&logo=home-assistant)
 
+## Preview
+
+![Pyscrypt Manager Screenshot](assets/screenshot.png)
+
 ## Features
 
 - 🐍 **Dedicated Sidebar App**: Registers as a native sidebar panel app (`/pyscrypt-manager`), bypassing the need for dashboard cards.
