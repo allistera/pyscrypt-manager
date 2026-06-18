@@ -18,27 +18,48 @@ Unlike Lovelace dashboards, this runs as a **dedicated application** directly re
 
 ## Installation & Setup
 
-We have automatically set up and copied the files to your local Home Assistant instance. If you need to replicate this manually, follow the steps below:
+You can install **Pyscrypt Manager** either automatically via HACS (recommended) or manually.
 
-### 1. Copy the Custom Component
-Copy the `pyscrypt_manager` directory into your Home Assistant's `custom_components` directory:
-```bash
-cp -r custom_components/pyscrypt_manager /path/to/home-assistant/config/custom_components/
-```
-In your setup, the path is:
-`[home-assistant-config/custom_components/pyscrypt_manager](file:///Users/allistera/Development/Projects/home-assistant-config/custom_components/pyscrypt_manager)`
+### Option A: Install via HACS (Recommended)
 
-### 2. Enable in Configuration
-Add the `pyscrypt_manager` domain configuration to your `configuration.yaml` file:
-```yaml
-pyscrypt_manager:
-```
+Since this is a custom integration not yet in the default HACS store, you need to add it as a Custom Repository:
 
-### 3. Restart Home Assistant
-Restart Home Assistant to load the integration. Once restarted, **Pyscrypt Manager** will automatically appear in your Home Assistant sidebar menu.
+1. **Open HACS:** Navigate to **HACS** in your Home Assistant sidebar.
+2. **Access Custom Repositories:** Click on the three dots (`...`) in the top-right corner of the HACS dashboard and select **Custom repositories**.
+3. **Add Repository:**
+   - **Repository:** Enter the URL: `https://github.com/allistera/pyscrypt-manager`
+   - **Category:** Select **Integration**.
+   - Click **Add**.
+4. **Download:** The repository will now appear in HACS. Click on it, select **Download** (in the bottom right), and choose the latest version.
+5. **Add to Configuration:** Add the domain entry to your Home Assistant `configuration.yaml` file:
+   ```yaml
+   pyscrypt_manager:
+   ```
+6. **Restart:** Restart Home Assistant Core to initialize the integration. Once restarted, the **Pyscrypt Manager** sidebar icon will appear automatically.
 
-## Repository Layout
+---
+
+### Option B: Manual Installation
+
+If you prefer to install it manually, copy the files directly into your configuration folder:
+
+1. **Copy Component Files:** Copy the `pyscrypt_manager` folder inside `custom_components` to your Home Assistant configuration directory under `custom_components/pyscrypt_manager/`.
+   ```bash
+   cp -r custom_components/pyscrypt_manager /path/to/home-assistant/config/custom_components/
+   ```
+2. **Add to Configuration:** Add the domain configuration to your `configuration.yaml`:
+   ```yaml
+   pyscrypt_manager:
+   ```
+3. **Restart:** Restart Home Assistant Core.
+
+---
+
+## File Structure
+
 - `custom_components/pyscrypt_manager/`
-  - [__init__.py](file:///Users/allistera/Development/Projects/pyscrypt-manager/custom_components/pyscrypt_manager/__init__.py) — Bootstraps integration and registers sidebar panel.
-  - [manifest.json](file:///Users/allistera/Development/Projects/pyscrypt-manager/custom_components/pyscrypt_manager/manifest.json) — Home Assistant integration parameters.
-  - [pyscrypt-manager-panel.js](file:///Users/allistera/Development/Projects/pyscrypt-manager/custom_components/pyscrypt_manager/pyscrypt-manager-panel.js) — The HTML/CSS/JS frontend panel application.
+  - `__init__.py` — Bootstraps the backend WebSocket API and registers the custom sidebar panel.
+  - `manifest.json` — Defines integration properties, owners, and HA dependencies.
+  - `pyscrypt-manager-panel.js` — The full front-end client interface built with theme-aware Dynatrace CSS variables and a custom regex-based syntax highlighter.
+- `hacs.json` — HACS metadata file defining integration compatibility.
+
