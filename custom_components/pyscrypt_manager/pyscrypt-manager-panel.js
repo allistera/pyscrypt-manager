@@ -1099,7 +1099,7 @@ def ${path.split('/').pop().replace('.py', '')}():
     });
 
     // Build hierarchical tree
-    const rootNode = { name: 'All Scripts', path: '', children: {}, count: 0 };
+    const rootNode = { name: 'PyScript Folder', path: '', children: {}, count: 0 };
     customFiles.forEach(file => {
       const parts = file.path.split('/');
       parts.pop(); // remove filename
