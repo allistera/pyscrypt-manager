@@ -16,6 +16,9 @@ class PyscryptManagerPanel extends HTMLElement {
 
     if (!this.shadowRoot) {
       this.initPanel();
+      // Seed the cache before loadFiles so the first service-change event
+      // doesn't trigger a redundant second updatePanel() call.
+      this._cachedServices = JSON.stringify(hass.services?.pyscrypt || {});
       this.loadFiles();
     } else {
       // Only re-render when pyscript services actually change — HA fires this
@@ -52,6 +55,11 @@ class PyscryptManagerPanel extends HTMLElement {
     // CodeMirror editor instance and cached modules
     this._cmEditor = null;
     this._cmModules = null;
+    // Generation counter: incremented each time the workspace is rebuilt.
+    // _initCodeEditor captures the generation before its async CDN fetch and
+    // bails out if it has changed by the time the editor would be created,
+    // preventing two concurrent inits from both mounting an editor.
+    this._cmGeneration = 0;
   }
 
   async loadFiles() {
@@ -82,8 +90,9 @@ class PyscryptManagerPanel extends HTMLElement {
           type: 'pyscrypt_manager/get_file',
           path: filePath
         });
-        this.selectedFileContent = result.content;
-        this.selectedFileOriginalContent = result.content;
+        const clean = this.sanitizeContent(result.content);
+        this.selectedFileContent = clean;
+        this.selectedFileOriginalContent = clean;
       } catch (err) {
         console.error('Failed to load file content:', err);
         this.selectedFileContent = `# Error loading file: ${err.message || err}`;
@@ -1285,6 +1294,21 @@ def ${path.split('/').pop().replace('.py', '')}():
     return new Date(mtimeSeconds * 1000).toLocaleDateString();
   }
 
+  sanitizeContent(content) {
+    // Strip <span class="hl-*"> tags injected by the legacy custom highlighter
+    // if any were accidentally persisted to disk. Only runs when the signature
+    // pattern is present so clean files are returned unchanged.
+    if (!content.includes('<span class="hl-')) return content;
+    let clean = content.replace(/<span class="hl-[^"]*">([\s\S]*?)<\/span>/g, '$1');
+    clean = clean
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#039;/g, "'");
+    return clean;
+  }
+
   async loadCodeMirror() {
     if (this._cmModules) return this._cmModules;
     const [{ EditorView, basicSetup }, { python }, { oneDark }] = await Promise.all([
@@ -1297,12 +1321,18 @@ def ${path.split('/').pop().replace('.py', '')}():
   }
 
   async _initCodeEditor(readonly = false) {
+    // Capture the generation at call-time. If renderRightWorkspace rebuilds the
+    // DOM before the CDN fetch completes, the generation will have incremented
+    // and this stale init will bail out instead of mounting a duplicate editor.
+    const generation = this._cmGeneration;
+
     const mount = this.shadowRoot.getElementById('cm-editor-mount');
     if (!mount) return;
 
     const { EditorView, basicSetup, python, oneDark } = await this.loadCodeMirror();
 
-    // User may have switched tabs while modules were loading
+    // Bail if a newer init has started or the mount was removed
+    if (this._cmGeneration !== generation) return;
     if (!this.shadowRoot.getElementById('cm-editor-mount')) return;
 
     const isDark = this.getAttribute('theme') !== 'light';
@@ -1343,11 +1373,12 @@ def ${path.split('/').pop().replace('.py', '')}():
     const container = this.shadowRoot.getElementById('right-workspace');
     if (!container) return;
 
-    // Destroy any existing CM editor before rebuilding the workspace DOM
+    // Destroy any existing CM editor and invalidate any in-flight async init
     if (this._cmEditor) {
       this._cmEditor.destroy();
       this._cmEditor = null;
     }
+    this._cmGeneration++;
 
     if (!this.selectedFilePath) {
       // Render Empty state matching the Dynatrace visual style
