@@ -48,6 +48,10 @@ class PyscryptManagerPanel extends HTMLElement {
 
     // Cache to avoid re-rendering on every HA state update
     this._cachedServices = null;
+
+    // CodeMirror editor instance and cached modules
+    this._cmEditor = null;
+    this._cmModules = null;
   }
 
   async loadFiles() {
@@ -95,11 +99,8 @@ class PyscryptManagerPanel extends HTMLElement {
 
   async saveFile() {
     if (!this.selectedFilePath) return;
-    
-    const textarea = this.shadowRoot.getElementById('code-textarea');
-    if (textarea) {
-      this.selectedFileContent = textarea.value;
-    }
+
+    // selectedFileContent is kept current by the CM update listener
 
     try {
       const btn = this.shadowRoot.getElementById('btn-save');
@@ -349,14 +350,6 @@ def ${path.split('/').pop().replace('.py', '')}():
           --hl-number: #e65100;
         }
 
-        /* Syntax Highlight Classes */
-        .hl-comment { color: var(--hl-comment); font-style: italic; }
-        .hl-string { color: var(--hl-string); }
-        .hl-keyword { color: var(--hl-keyword); font-weight: 600; }
-        .hl-decorator { color: var(--hl-decorator); }
-        .hl-function { color: var(--hl-function); }
-        .hl-builtin { color: var(--hl-builtin); font-weight: 600; }
-        .hl-number { color: var(--hl-number); }
 
         .app-layout {
           display: flex;
@@ -781,85 +774,21 @@ def ${path.split('/').pop().replace('.py', '')}():
           height: 100%;
         }
 
-        .code-editor-container {
+        .cm-editor-mount {
           flex-grow: 1;
-          display: flex;
-          background: var(--editor-bg);
+          overflow: hidden;
           border: 1px solid var(--border-color);
           border-radius: 8px;
-          overflow: hidden;
-          font-family: 'Fira Code', 'Courier New', Courier, monospace;
-          font-size: 0.85rem;
-          position: relative;
+          min-height: 0;
         }
 
-        .line-numbers {
-          padding: 16px 10px;
-          background: var(--editor-lines-bg);
-          border-right: 1px solid var(--border-color);
-          color: var(--editor-lines-text);
-          text-align: right;
-          user-select: none;
-          overflow-y: hidden;
-          display: flex;
-          flex-direction: column;
-          line-height: 1.5;
-          font-family: 'Fira Code', 'Courier New', Courier, monospace;
-          font-size: 0.85rem;
+        .cm-editor-mount .cm-editor {
+          height: 100%;
+          border-radius: 8px;
         }
 
-        .line-numbers div {
-          line-height: 1.5;
-        }
-
-        .code-editor-wrapper {
-          position: relative;
-          flex-grow: 1;
-          display: flex;
-          background: var(--editor-bg);
-          overflow: hidden;
-        }
-
-        .highlight-overlay {
-          position: absolute;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          margin: 0;
-          padding: 16px;
-          box-sizing: border-box;
-          pointer-events: none;
-          white-space: pre;
-          overflow: hidden;
-          font-family: 'Fira Code', 'Courier New', Courier, monospace;
-          font-size: 0.85rem;
-          line-height: 1.5;
-          color: var(--editor-text);
-          background: transparent;
-        }
-
-        .code-textarea {
-          position: absolute;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          margin: 0;
-          padding: 16px;
-          box-sizing: border-box;
-          background: transparent;
-          border: none;
-          color: transparent;
-          caret-color: var(--text-main);
-          line-height: 1.5;
-          font-family: 'Fira Code', 'Courier New', Courier, monospace;
-          font-size: 0.85rem;
-          resize: none;
-          outline: none;
+        .cm-editor-mount .cm-scroller {
           overflow: auto;
-          white-space: pre;
-          word-break: normal;
         }
 
         .editor-actions-bar {
@@ -1356,82 +1285,69 @@ def ${path.split('/').pop().replace('.py', '')}():
     return new Date(mtimeSeconds * 1000).toLocaleDateString();
   }
 
-  highlightPython(code) {
-    // Escape HTML
-    let html = code
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-
-    // Placeholders collection
-    const placeholders = [];
-    
-    // 1. Triple quote strings (double and single)
-    html = html.replace(/(""\"[\s\S]*?""\")|(\'\'\'[\s\S]*?\'\'\')/g, (match) => {
-      const placeholder = `__PLACEHOLDER_${placeholders.length}__`;
-      placeholders.push({ placeholder, html: `<span class="hl-string">${match}</span>` });
-      return placeholder;
-    });
-
-    // 2. Single line strings (double and single)
-    html = html.replace(/("[^"\n]*")|('[^'\n]*')/g, (match) => {
-      const placeholder = `__PLACEHOLDER_${placeholders.length}__`;
-      placeholders.push({ placeholder, html: `<span class="hl-string">${match}</span>` });
-      return placeholder;
-    });
-
-    // 3. Comments
-    html = html.replace(/(#[^\n]*)/g, (match) => {
-      const placeholder = `__PLACEHOLDER_${placeholders.length}__`;
-      placeholders.push({ placeholder, html: `<span class="hl-comment">${match}</span>` });
-      return placeholder;
-    });
-
-    // Highlight decorators
-    html = html.replace(/(@\w+)/g, '<span class="hl-decorator">$1</span>');
-
-    // Highlight keywords
-    const keywords = /\b(def|class|return|if|else|elif|for|while|in|import|from|as|try|except|raise|and|or|not|is|lambda|pass|break|continue|global|nonlocal|assert|with|yield)\b/g;
-    html = html.replace(keywords, '<span class="hl-keyword">$1</span>');
-
-    // Highlight builtins
-    const builtins = /\b(self|True|False|None|log|print)\b/g;
-    html = html.replace(builtins, '<span class="hl-builtin">$1</span>');
-
-    // Highlight functions
-    html = html.replace(/\b(\w+)(?=\s*\()/g, '<span class="hl-function">$1</span>');
-
-    // Highlight numbers
-    html = html.replace(/\b(\d+)\b/g, '<span class="hl-number">$1</span>');
-
-    // Restore placeholders
-    for (let i = placeholders.length - 1; i >= 0; i--) {
-      html = html.replace(placeholders[i].placeholder, placeholders[i].html);
-    }
-
-    return html;
+  async loadCodeMirror() {
+    if (this._cmModules) return this._cmModules;
+    const [{ EditorView, basicSetup }, { python }, { oneDark }] = await Promise.all([
+      import('https://esm.sh/codemirror@6'),
+      import('https://esm.sh/@codemirror/lang-python@6'),
+      import('https://esm.sh/@codemirror/theme-one-dark@6'),
+    ]);
+    this._cmModules = { EditorView, basicSetup, python, oneDark };
+    return this._cmModules;
   }
 
-  updateHighlighting() {
-    const codeEl = this.shadowRoot.getElementById('highlight-code');
-    if (codeEl) {
-      codeEl.innerHTML = this.highlightPython(this.selectedFileContent);
-    }
+  async _initCodeEditor(readonly = false) {
+    const mount = this.shadowRoot.getElementById('cm-editor-mount');
+    if (!mount) return;
+
+    const { EditorView, basicSetup, python, oneDark } = await this.loadCodeMirror();
+
+    // User may have switched tabs while modules were loading
+    if (!this.shadowRoot.getElementById('cm-editor-mount')) return;
+
+    const isDark = this.getAttribute('theme') !== 'light';
+
+    const extensions = [
+      basicSetup,
+      python(),
+      EditorView.updateListener.of(update => {
+        if (update.docChanged) {
+          this.selectedFileContent = update.state.doc.toString();
+          this.isEditing = true;
+        }
+      }),
+      EditorView.theme({
+        '&': { height: '100%', backgroundColor: 'var(--editor-bg)' },
+        '.cm-scroller': {
+          fontFamily: "'Fira Code', 'Courier New', monospace",
+          fontSize: '0.85rem',
+          lineHeight: '1.5',
+        },
+        '.cm-gutters': { backgroundColor: 'var(--editor-lines-bg)', borderRight: '1px solid var(--border-color)' },
+        '.cm-lineNumbers .cm-gutterElement': { color: 'var(--editor-lines-text)' },
+      }),
+    ];
+
+    if (isDark) extensions.push(oneDark);
+    if (readonly) extensions.push(EditorView.editable.of(false));
+
+    this._cmEditor = new EditorView({
+      doc: this.selectedFileContent,
+      extensions,
+      parent: mount,
+      root: this.shadowRoot,
+    });
   }
 
-  renderRightWorkspace(pyscryptServices) {
+  renderRightWorkspace(pyscriptServices) {
     const container = this.shadowRoot.getElementById('right-workspace');
     if (!container) return;
 
-    // Capture editor state before the DOM is rebuilt so we can restore it after.
-    const prevActive = this.shadowRoot.activeElement;
-    const wasEditorFocused = prevActive && prevActive.id === 'code-textarea';
-    const savedSelStart = wasEditorFocused ? prevActive.selectionStart : 0;
-    const savedSelEnd   = wasEditorFocused ? prevActive.selectionEnd   : 0;
-    const savedScrollT  = wasEditorFocused ? prevActive.scrollTop      : 0;
-    const savedScrollL  = wasEditorFocused ? prevActive.scrollLeft     : 0;
-
-    const pyscriptServices = pyscryptServices;
+    // Destroy any existing CM editor before rebuilding the workspace DOM
+    if (this._cmEditor) {
+      this._cmEditor.destroy();
+      this._cmEditor = null;
+    }
 
     if (!this.selectedFilePath) {
       // Render Empty state matching the Dynatrace visual style
@@ -1452,6 +1368,7 @@ def ${path.split('/').pop().replace('.py', '')}():
     // Identify active selected item
     const file = this.files.find(f => f.path === this.selectedFilePath);
     const serviceKey = file ? this.getServiceKey(file.path) : this.selectedFilePath;
+    const isVirtual = !file;
     const serviceData = pyscriptServices[serviceKey];
 
     const titleName = file ? file.name : serviceKey;
@@ -1548,20 +1465,11 @@ def ${path.split('/').pop().replace('.py', '')}():
         </div>
       `;
     } else {
-      // Code Editor Tab
-      const isVirtual = !file;
+      // Code Editor Tab — CodeMirror mounts into #cm-editor-mount after innerHTML is set
       const editorStatusText = isVirtual ? 'Virtual script. Editing disabled.' : `${relativePath}`;
       bodyHtml = `
         <div class="editor-workspace">
-          <div class="code-editor-container">
-            <div class="line-numbers" id="line-numbers">
-              <!-- Line numbers dynamic -->
-            </div>
-            <div class="code-editor-wrapper">
-              <pre class="highlight-overlay" id="highlight-overlay"><code class="python-code" id="highlight-code"></code></pre>
-              <textarea class="code-textarea" id="code-textarea" spellcheck="false" ${isVirtual ? 'readonly' : ''}></textarea>
-            </div>
-          </div>
+          <div id="cm-editor-mount" class="cm-editor-mount"></div>
           <div class="editor-actions-bar">
             <span class="editor-status">${editorStatusText}</span>
             <div class="editor-buttons">
@@ -1616,63 +1524,9 @@ def ${path.split('/').pop().replace('.py', '')}():
       this.updatePanel();
     });
 
-    // Run Code Editor Setup synchronously if active
+    // Initialize CodeMirror for the code editor tab (async, non-blocking)
     if (this.activeTab === 'code') {
-      const textarea = this.shadowRoot.getElementById('code-textarea');
-      const highlightOverlay = this.shadowRoot.getElementById('highlight-overlay');
-      if (textarea) {
-        textarea.value = this.selectedFileContent;
-        this.updateLineNumbers();
-        this.updateHighlighting();
-        
-        // Attach code editor scroll syncing
-        const lineNumbers = this.shadowRoot.getElementById('line-numbers');
-        textarea.addEventListener('scroll', () => {
-          lineNumbers.scrollTop = textarea.scrollTop;
-          if (highlightOverlay) {
-            highlightOverlay.scrollTop = textarea.scrollTop;
-            highlightOverlay.scrollLeft = textarea.scrollLeft;
-          }
-        });
-        
-        textarea.addEventListener('input', () => {
-          this.isEditing = true;
-          this.selectedFileContent = textarea.value;
-          this.updateLineNumbers();
-          this.updateHighlighting();
-        });
-
-        // Restore focus and cursor position if the editor was active before re-render
-        if (wasEditorFocused) {
-          textarea.focus();
-          textarea.selectionStart = savedSelStart;
-          textarea.selectionEnd   = savedSelEnd;
-          textarea.scrollTop      = savedScrollT;
-          textarea.scrollLeft     = savedScrollL;
-        }
-
-        // Tab key support
-        textarea.addEventListener('keydown', (e) => {
-          if (e.key === 'Tab') {
-            e.preventDefault();
-            const start = textarea.selectionStart;
-            const end = textarea.selectionEnd;
-            const val = textarea.value;
-
-            // Insert 4 spaces
-            textarea.value = val.substring(0, start) + '    ' + val.substring(end);
-
-            // Put caret at right position
-            textarea.selectionStart = textarea.selectionEnd = start + 4;
-
-            // Trigger updates
-            this.isEditing = true;
-            this.selectedFileContent = textarea.value;
-            this.updateLineNumbers();
-            this.updateHighlighting();
-          }
-        });
-      }
+      this._initCodeEditor(isVirtual);
     }
 
     if (this.activeTab === 'visual') {
@@ -1723,18 +1577,7 @@ def ${path.split('/').pop().replace('.py', '')}():
     }
   }
 
-  updateLineNumbers() {
-    const textarea = this.shadowRoot.getElementById('code-textarea');
-    const lineNumbers = this.shadowRoot.getElementById('line-numbers');
-    if (!textarea || !lineNumbers) return;
-
-    const lines = textarea.value.split('\n').length;
-    let numbers = '';
-    for (let i = 1; i <= lines; i++) {
-      numbers += `<div>${i}</div>`;
-    }
-    lineNumbers.innerHTML = numbers;
-  }
 }
+
 
 customElements.define('pyscrypt-manager-panel', PyscryptManagerPanel);
