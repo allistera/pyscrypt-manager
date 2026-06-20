@@ -18,7 +18,14 @@ class PyscryptManagerPanel extends HTMLElement {
       this.initPanel();
       this.loadFiles();
     } else {
-      this.updatePanel();
+      // Only re-render when pyscript services actually change — HA fires this
+      // setter on every state update, which would otherwise constantly recreate
+      // the editor DOM and break focus/cursor while the user is typing.
+      const services = JSON.stringify(hass.services?.pyscript || {});
+      if (services !== this._cachedServices) {
+        this._cachedServices = services;
+        this.updatePanel();
+      }
     }
   }
 
@@ -30,7 +37,7 @@ class PyscryptManagerPanel extends HTMLElement {
     this.selectedFileOriginalContent = '';
     this.isEditing = false;
     this.activeTab = 'visual'; // 'visual' or 'code'
-    
+
     // Filters
     this.selectedFolder = ''; // folder string
     this.searchQuery = '';
@@ -38,6 +45,9 @@ class PyscryptManagerPanel extends HTMLElement {
 
     // Console output log
     this.consoleLogs = [];
+
+    // Cache to avoid re-rendering on every HA state update
+    this._cachedServices = null;
   }
 
   async loadFiles() {
@@ -1409,9 +1419,19 @@ def ${path.split('/').pop().replace('.py', '')}():
     }
   }
 
-  renderRightWorkspace(pyscriptServices) {
+  renderRightWorkspace(pyscryptServices) {
     const container = this.shadowRoot.getElementById('right-workspace');
     if (!container) return;
+
+    // Capture editor state before the DOM is rebuilt so we can restore it after.
+    const prevActive = this.shadowRoot.activeElement;
+    const wasEditorFocused = prevActive && prevActive.id === 'code-textarea';
+    const savedSelStart = wasEditorFocused ? prevActive.selectionStart : 0;
+    const savedSelEnd   = wasEditorFocused ? prevActive.selectionEnd   : 0;
+    const savedScrollT  = wasEditorFocused ? prevActive.scrollTop      : 0;
+    const savedScrollL  = wasEditorFocused ? prevActive.scrollLeft     : 0;
+
+    const pyscriptServices = pyscryptServices;
 
     if (!this.selectedFilePath) {
       // Render Empty state matching the Dynatrace visual style
@@ -1621,6 +1641,15 @@ def ${path.split('/').pop().replace('.py', '')}():
           this.updateLineNumbers();
           this.updateHighlighting();
         });
+
+        // Restore focus and cursor position if the editor was active before re-render
+        if (wasEditorFocused) {
+          textarea.focus();
+          textarea.selectionStart = savedSelStart;
+          textarea.selectionEnd   = savedSelEnd;
+          textarea.scrollTop      = savedScrollT;
+          textarea.scrollLeft     = savedScrollL;
+        }
 
         // Tab key support
         textarea.addEventListener('keydown', (e) => {
