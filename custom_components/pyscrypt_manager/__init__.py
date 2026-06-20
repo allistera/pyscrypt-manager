@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 
 import voluptuous as vol
 
@@ -50,7 +49,7 @@ async def async_register_frontend_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "pyscrypt-manager-panel",
-                "module_url": "/pyscrypt_manager_static/pyscrypt-manager-panel.js?v=8",
+                "module_url": "/pyscrypt_manager_static/pyscrypt-manager-panel.js?v=9",
             }
         },
         require_admin=False,
@@ -65,30 +64,6 @@ def _register_websocket_handlers(hass: HomeAssistant) -> None:
     _LOGGER.info("Registered Pyscrypt Manager WebSocket commands")
 
 
-def extract_metadata(file_path: str) -> tuple[list[str], str]:
-    """Extract tags and description from comment lines at start of script."""
-    tags = []
-    description = ""
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            for _ in range(15):  # read first 15 lines
-                line = f.readline()
-                if not line:
-                    break
-                line = line.strip()
-                # Match tags (e.g. # tags: climate, active, helper)
-                tag_match = re.match(r"^#\s*tags?:\s*(.*)$", line, re.IGNORECASE)
-                if tag_match:
-                    tags = [t.strip().lower() for t in tag_match.group(1).split(",") if t.strip()]
-                # Match description (e.g. # description: My utility script)
-                desc_match = re.match(r"^#\s*description:\s*(.*)$", line, re.IGNORECASE)
-                if desc_match:
-                    description = desc_match.group(1).strip()
-    except Exception:
-        pass
-    return tags, description
-
-
 @websocket_api.websocket_command({
     vol.Required("type"): "pyscrypt_manager/list_files",
 })
@@ -98,7 +73,7 @@ async def ws_list_files(
     connection: websocket_api.ActiveConnection,
     msg: dict,
 ) -> None:
-    """List all pyscript files with metadata."""
+    """List all pyscript files."""
     pyscript_dir = os.path.join(hass.config.config_dir, "pyscript")
     if not os.path.exists(pyscript_dir):
         connection.send_result(msg["id"], [])
@@ -112,9 +87,6 @@ async def ws_list_files(
                     abs_path = os.path.join(root, filename)
                     rel_path = os.path.relpath(abs_path, pyscript_dir)
                     
-                    # Extract tags and description from python file comments
-                    tags, description = extract_metadata(abs_path)
-                    
                     try:
                         size = os.path.getsize(abs_path)
                         mtime = os.path.getmtime(abs_path)
@@ -127,8 +99,6 @@ async def ws_list_files(
                         "name": filename,
                         "size": size,
                         "mtime": mtime,
-                        "tags": tags,
-                        "custom_description": description,
                     })
         return files
 
@@ -150,8 +120,9 @@ async def ws_get_file(
     pyscript_dir = os.path.join(hass.config.config_dir, "pyscript")
     file_path = os.path.abspath(os.path.join(pyscript_dir, msg["path"]))
     
-    # Path traversal safety check
-    if not file_path.startswith(pyscript_dir):
+    # Secure path traversal check with trailing separator
+    pyscript_dir_prefix = pyscript_dir if pyscript_dir.endswith(os.path.sep) else pyscript_dir + os.path.sep
+    if not file_path.startswith(pyscript_dir_prefix) and file_path != pyscript_dir:
         connection.send_error(msg["id"], "unauthorized", "Access denied")
         return
 
@@ -184,8 +155,9 @@ async def ws_save_file(
     pyscript_dir = os.path.join(hass.config.config_dir, "pyscript")
     file_path = os.path.abspath(os.path.join(pyscript_dir, msg["path"]))
     
-    # Path traversal safety check
-    if not file_path.startswith(pyscript_dir):
+    # Secure path traversal check with trailing separator
+    pyscript_dir_prefix = pyscript_dir if pyscript_dir.endswith(os.path.sep) else pyscript_dir + os.path.sep
+    if not file_path.startswith(pyscript_dir_prefix) and file_path != pyscript_dir:
         connection.send_error(msg["id"], "unauthorized", "Access denied")
         return
 

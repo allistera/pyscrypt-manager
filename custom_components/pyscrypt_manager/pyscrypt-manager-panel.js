@@ -144,6 +144,10 @@ class PyscryptManagerPanel extends HTMLElement {
     if (!scriptPath) return;
 
     let path = scriptPath.trim();
+    if (path.includes('..')) {
+      alert('Invalid path: Directory traversal is not allowed.');
+      return;
+    }
     if (!path.endsWith('.py')) path += '.py';
 
     const boilerplate = `# A newly created custom pyscript
@@ -178,6 +182,16 @@ def ${path.split('/').pop().replace('.py', '')}():
     return base.replace(/[\/\\]/g, '_');
   }
 
+  escapeHtml(text) {
+    if (typeof text !== 'string') text = String(text);
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
   logToConsole(source, message, type = 'info') {
     const time = new Date().toLocaleTimeString();
     this.consoleLogs.push({ time, source, message, type });
@@ -202,7 +216,7 @@ def ${path.split('/').pop().replace('.py', '')}():
       return `<div style="margin-bottom:6px; font-family:monospace; font-size:0.85rem; line-height:1.4;">
         <span style="color:var(--text-muted); font-size:0.75rem;">[${log.time}]</span> 
         <span style="color:${color}; font-weight:600;">[${log.source}]</span> 
-        <span style="color:var(--text-main); white-space:pre-wrap;">${log.message}</span>
+        <span style="color:var(--text-main); white-space:pre-wrap;">${this.escapeHtml(log.message)}</span>
       </div>`;
     }).join('');
 
