@@ -39,6 +39,10 @@ class PyscryptManagerPanel extends HTMLElement {
     this.selectedFileContent = '';
     this.selectedFileOriginalContent = '';
     this.isEditing = false;
+    // True when the current file's content failed to load. The editor is then
+    // mounted read-only and Save is disabled so the error placeholder can never
+    // be written over the real script on disk.
+    this.selectedFileLoadError = false;
     this.activeTab = 'visual'; // 'visual' or 'code'
 
     // Filters
@@ -93,14 +97,17 @@ class PyscryptManagerPanel extends HTMLElement {
         const clean = this.sanitizeContent(result.content);
         this.selectedFileContent = clean;
         this.selectedFileOriginalContent = clean;
+        this.selectedFileLoadError = false;
       } catch (err) {
         console.error('Failed to load file content:', err);
         this.selectedFileContent = `# Error loading file: ${err.message || err}`;
         this.selectedFileOriginalContent = this.selectedFileContent;
+        this.selectedFileLoadError = true;
       }
     } else {
       this.selectedFileContent = '';
       this.selectedFileOriginalContent = '';
+      this.selectedFileLoadError = false;
     }
 
     this.updatePanel();
@@ -108,6 +115,8 @@ class PyscryptManagerPanel extends HTMLElement {
 
   async saveFile() {
     if (!this.selectedFilePath) return;
+    // Never persist the "# Error loading file" placeholder over the real script.
+    if (this.selectedFileLoadError) return;
 
     // selectedFileContent is kept current by the CM update listener
 
@@ -800,6 +809,30 @@ def ${path.split('/').pop().replace('.py', '')}():
           overflow: auto;
         }
 
+        .cm-load-error {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          height: 100%;
+          padding: 24px;
+          text-align: center;
+          background-color: var(--editor-bg);
+        }
+
+        .cm-load-error-title {
+          font-weight: 600;
+          margin: 0;
+        }
+
+        .cm-load-error-detail {
+          margin: 0;
+          opacity: 0.7;
+          font-size: 0.85rem;
+          max-width: 360px;
+        }
+
         .editor-actions-bar {
           display: flex;
           justify-content: space-between;
@@ -1332,7 +1365,19 @@ def ${path.split('/').pop().replace('.py', '')}():
     const mount = this.shadowRoot.getElementById('cm-editor-mount');
     if (!mount) return;
 
-    const { EditorView, basicSetup, python, oneDark } = await this.loadCodeMirror();
+    let modules;
+    try {
+      modules = await this.loadCodeMirror();
+    } catch (err) {
+      // CDN unreachable, esm.sh outage, or a bad package publish. Surface a
+      // visible, retryable error instead of leaving the tab permanently blank.
+      console.error('Failed to load CodeMirror from CDN:', err);
+      if (this._cmGeneration !== generation) return;
+      const liveMount = this.shadowRoot.getElementById('cm-editor-mount');
+      if (liveMount) this._renderEditorLoadError(liveMount, readonly);
+      return;
+    }
+    const { EditorView, basicSetup, python, oneDark } = modules;
 
     // Bail if a newer init has started or the mount was removed
     if (this._cmGeneration !== generation) return;
@@ -1370,6 +1415,26 @@ def ${path.split('/').pop().replace('.py', '')}():
       parent: mount,
       root: this.shadowRoot,
     });
+  }
+
+  _renderEditorLoadError(mount, readonly) {
+    mount.innerHTML = `
+      <div class="cm-load-error">
+        <p class="cm-load-error-title">Couldn't load the code editor.</p>
+        <p class="cm-load-error-detail">The editor library is fetched from a CDN. Check your network connection and try again.</p>
+        <button class="btn-action-secondary" id="btn-retry-cm">Retry</button>
+      </div>
+    `;
+    const retryBtn = mount.querySelector('#btn-retry-cm');
+    if (retryBtn) {
+      retryBtn.addEventListener('click', () => {
+        mount.innerHTML = '';
+        this._initCodeEditor(readonly).catch(err => {
+          console.error('Code editor initialization failed:', err);
+          if (mount.isConnected) this._renderEditorLoadError(mount, readonly);
+        });
+      });
+    }
   }
 
   renderRightWorkspace(pyscriptServices) {
@@ -1500,7 +1565,10 @@ def ${path.split('/').pop().replace('.py', '')}():
       `;
     } else {
       // Code Editor Tab — CodeMirror mounts into #cm-editor-mount after innerHTML is set
-      const editorStatusText = isVirtual ? 'Virtual script. Editing disabled.' : `${relativePath}`;
+      const editorReadonly = isVirtual || this.selectedFileLoadError;
+      const editorStatusText = this.selectedFileLoadError
+        ? 'Failed to load file. Editing disabled to protect the script on disk.'
+        : (isVirtual ? 'Virtual script. Editing disabled.' : `${relativePath}`);
       bodyHtml = `
         <div class="editor-workspace">
           <div id="cm-editor-mount" class="cm-editor-mount"></div>
@@ -1513,7 +1581,7 @@ def ${path.split('/').pop().replace('.py', '')}():
                 </svg>
                 Reload Engine
               </button>
-              <button class="btn-action-primary" id="btn-save" ${isVirtual ? 'disabled' : ''}>
+              <button class="btn-action-primary" id="btn-save" ${editorReadonly ? 'disabled' : ''}>
                 <svg style="width:16px;height:16px;" viewBox="0 0 24 24">
                   <path fill="currentColor" d="M15,9H5V5H15M12,19A3,3 0 0,1 9,16A3,3 0 0,1 12,13A3,3 0 0,1 15,16A3,3 0 0,1 12,19M17,3H5C3.89,3 3,3.9 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V7L17,3Z"/>
                 </svg>
@@ -1558,9 +1626,16 @@ def ${path.split('/').pop().replace('.py', '')}():
       this.updatePanel();
     });
 
-    // Initialize CodeMirror for the code editor tab (async, non-blocking)
+    // Initialize CodeMirror for the code editor tab (async, non-blocking).
+    // Read-only for virtual scripts or when the file failed to load. The
+    // .catch() is a safety net so a CDN/init failure can never surface as an
+    // unhandled promise rejection that leaves the tab silently blank.
     if (this.activeTab === 'code') {
-      this._initCodeEditor(isVirtual);
+      this._initCodeEditor(isVirtual || this.selectedFileLoadError).catch(err => {
+        console.error('Code editor initialization failed:', err);
+        const mount = this.shadowRoot.getElementById('cm-editor-mount');
+        if (mount) this._renderEditorLoadError(mount, isVirtual || this.selectedFileLoadError);
+      });
     }
 
     if (this.activeTab === 'visual') {
