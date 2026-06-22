@@ -833,6 +833,53 @@ def ${path.split('/').pop().replace('.py', '')}():
           max-width: 360px;
         }
 
+        /* AI Tab */
+        .ai-tab {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          height: 100%;
+          padding: 24px;
+        }
+
+        .ai-prompt-wrapper {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          width: 100%;
+          max-width: 720px;
+          padding: 14px 22px;
+          background-color: var(--editor-lines-bg, #f1f3f5);
+          border: 1px solid transparent;
+          border-radius: 9999px;
+          transition: border-color 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .ai-prompt-wrapper:focus-within {
+          border-color: var(--primary-color, #3b82f6);
+          box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+        }
+
+        .ai-prompt-icon {
+          width: 22px;
+          height: 22px;
+          flex-shrink: 0;
+          color: var(--text-muted, #6b7280);
+        }
+
+        .ai-prompt-input {
+          flex-grow: 1;
+          border: none;
+          outline: none;
+          background: transparent;
+          font-size: 1.05rem;
+          color: var(--primary-text-color, inherit);
+        }
+
+        .ai-prompt-input::placeholder {
+          color: var(--text-muted, #6b7280);
+        }
+
         .editor-actions-bar {
           display: flex;
           justify-content: space-between;
@@ -1563,6 +1610,18 @@ def ${path.split('/').pop().replace('.py', '')}():
           </div>
         </div>
       `;
+    } else if (this.activeTab === 'ai') {
+      // AI Tab — a single centered prompt box for describing an automation
+      bodyHtml = `
+        <div class="ai-tab">
+          <div class="ai-prompt-wrapper">
+            <svg class="ai-prompt-icon" viewBox="0 0 24 24">
+              <path fill="currentColor" d="M7.5,5.6L10,7L8.6,4.5L10,2L7.5,3.4L5,2L6.4,4.5L5,7L7.5,5.6M19.5,15.4L17,14L18.4,16.5L17,19L19.5,17.6L22,19L20.6,16.5L22,14L19.5,15.4M22,2L19.5,3.4L17,2L18.4,4.5L17,7L19.5,5.6L22,7L20.6,4.5L22,2M13.34,12.78L15.78,10.34L13.66,8.22L11.22,10.66L13.34,12.78M14.37,7.29C14.76,6.9 15.39,6.9 15.78,7.29L16.71,8.22C17.1,8.61 17.1,9.24 16.71,9.63L4.04,22.3C3.65,22.69 3.02,22.69 2.63,22.3L1.7,21.37C1.31,20.98 1.31,20.35 1.7,19.96L14.37,7.29Z"/>
+            </svg>
+            <input type="text" class="ai-prompt-input" id="ai-prompt-input" placeholder="Turn off the lights when I leave the livingroom" />
+          </div>
+        </div>
+      `;
     } else {
       // Code Editor Tab — CodeMirror mounts into #cm-editor-mount after innerHTML is set
       const editorReadonly = isVirtual || this.selectedFileLoadError;
@@ -1603,8 +1662,9 @@ def ${path.split('/').pop().replace('.py', '')}():
         </div>
         <div class="workspace-controls">
           <div class="toggle-group">
-            <button class="toggle-btn ${this.activeTab === 'visual' ? 'active' : ''}" id="tab-visual-btn">Visual</button>
+            <button class="toggle-btn ${this.activeTab === 'visual' ? 'active' : ''}" id="tab-visual-btn">Testing</button>
             <button class="toggle-btn ${this.activeTab === 'code' ? 'active' : ''}" id="tab-code-btn">Code Editor</button>
+            <button class="toggle-btn ${this.activeTab === 'ai' ? 'active' : ''}" id="tab-ai-btn">AI</button>
           </div>
         </div>
       </div>
@@ -1623,6 +1683,11 @@ def ${path.split('/').pop().replace('.py', '')}():
 
     this.shadowRoot.getElementById('tab-code-btn').addEventListener('click', () => {
       this.activeTab = 'code';
+      this.updatePanel();
+    });
+
+    this.shadowRoot.getElementById('tab-ai-btn').addEventListener('click', () => {
+      this.activeTab = 'ai';
       this.updatePanel();
     });
 
@@ -1668,7 +1733,7 @@ def ${path.split('/').pop().replace('.py', '')}():
           }
         });
       }
-    } else {
+    } else if (this.activeTab === 'code') {
       // Code Editor Tab buttons
       const saveBtn = this.shadowRoot.getElementById('btn-save');
       if (saveBtn) {
