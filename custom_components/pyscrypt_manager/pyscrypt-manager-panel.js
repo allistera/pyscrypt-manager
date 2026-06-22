@@ -1311,10 +1311,13 @@ def ${path.split('/').pop().replace('.py', '')}():
 
   async loadCodeMirror() {
     if (this._cmModules) return this._cmModules;
+    // Pin exact versions. The `codemirror@6` range resolves to the anomalous
+    // 6.65.7 publish, a CM5-style bundle that only has a `default` export, so
+    // named imports like { EditorView, basicSetup } come back undefined.
     const [{ EditorView, basicSetup }, { python }, { oneDark }] = await Promise.all([
-      import('https://esm.sh/codemirror@6'),
-      import('https://esm.sh/@codemirror/lang-python@6'),
-      import('https://esm.sh/@codemirror/theme-one-dark@6'),
+      import('https://esm.sh/codemirror@6.0.2'),
+      import('https://esm.sh/@codemirror/lang-python@6.2.1'),
+      import('https://esm.sh/@codemirror/theme-one-dark@6.1.3'),
     ]);
     this._cmModules = { EditorView, basicSetup, python, oneDark };
     return this._cmModules;
