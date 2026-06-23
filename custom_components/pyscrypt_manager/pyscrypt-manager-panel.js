@@ -824,6 +824,31 @@ def ${path.split('/').pop().replace('.py', '')}():
           overflow: auto;
         }
 
+        .cm-loading {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 12px;
+          height: 100%;
+          background-color: var(--editor-bg);
+          color: var(--text-muted);
+          font-size: 0.85rem;
+        }
+
+        .cm-spinner {
+          width: 32px;
+          height: 32px;
+          border: 3px solid var(--border-color);
+          border-top-color: var(--primary-color);
+          border-radius: 50%;
+          animation: cm-spin 0.7s linear infinite;
+        }
+
+        @keyframes cm-spin {
+          to { transform: rotate(360deg); }
+        }
+
         .cm-load-error {
           display: flex;
           flex-direction: column;
@@ -1424,6 +1449,9 @@ def ${path.split('/').pop().replace('.py', '')}():
     if (isDark) extensions.push(oneDark);
     if (readonly) extensions.push(EditorView.editable.of(false));
 
+    // Remove the loading spinner before mounting the editor.
+    mount.innerHTML = '';
+
     this._cmEditor = new EditorView({
       doc: this.selectedFileContent,
       extensions,
@@ -1593,7 +1621,12 @@ def ${path.split('/').pop().replace('.py', '')}():
         : (isVirtual ? 'Virtual script. Editing disabled.' : `${relativePath}`);
       bodyHtml = `
         <div class="editor-workspace">
-          <div id="cm-editor-mount" class="cm-editor-mount"></div>
+          <div id="cm-editor-mount" class="cm-editor-mount">
+            <div class="cm-loading">
+              <div class="cm-spinner"></div>
+              <span>Loading source code…</span>
+            </div>
+          </div>
           <div class="editor-actions-bar">
             <span class="editor-status">${editorStatusText}</span>
             <div class="editor-buttons">
