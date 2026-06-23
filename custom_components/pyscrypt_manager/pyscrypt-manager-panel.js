@@ -115,6 +115,32 @@ class PyscryptManagerPanel extends HTMLElement {
     }
 
     this.updatePanel();
+
+    // Auto-register the file's service(s) on open if pyscript hasn't yet.
+    if (filePath) {
+      this._autoRegisterServices(this.files.find(f => f.path === filePath));
+    }
+  }
+
+  // If the opened file declares a service that pyscript hasn't registered yet,
+  // reload the engine once so it becomes runnable without a manual click. The
+  // per-path guard avoids a reload loop when a service never registers (e.g.
+  // the file errors on load); the manual Reload Engine button remains for retries.
+  async _autoRegisterServices(file) {
+    if (!file) return;
+    const declared = this.servicesForFile(file);
+    if (declared.length === 0 || this.registeredServicesForFile(file).length > 0) return;
+
+    if (!this._autoRegisterAttempted) this._autoRegisterAttempted = new Set();
+    if (this._autoRegisterAttempted.has(file.path)) return;
+    this._autoRegisterAttempted.add(file.path);
+
+    this.logToConsole(
+      'System',
+      `Registering ${declared.map(s => `pyscript.${s}`).join(', ')} via engine reload...`,
+      'info'
+    );
+    await this.reloadPyscripts();
   }
 
   async saveFile() {
@@ -137,9 +163,13 @@ class PyscryptManagerPanel extends HTMLElement {
       this.selectedFileOriginalContent = this.selectedFileContent;
       this.isEditing = false;
       this.logToConsole('System', 'File saved successfully.', 'success');
-      
+
+      // Allow a fresh auto-register attempt now the file content changed.
+      if (this._autoRegisterAttempted) this._autoRegisterAttempted.delete(this.selectedFilePath);
+
       // Reload file list in background to pick up any metadata changes
       await this.loadFiles();
+      this._autoRegisterServices(this.files.find(f => f.path === this.selectedFilePath));
     } catch (err) {
       this.logToConsole('System', `Failed to save file: ${err.message || err}`, 'error');
     } finally {
