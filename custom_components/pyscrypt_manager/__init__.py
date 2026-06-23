@@ -88,7 +88,7 @@ async def async_register_frontend_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "pyscrypt-manager-panel",
-                "module_url": "/pyscrypt_manager_static/pyscrypt-manager-panel.js?v=18",
+                "module_url": "/pyscrypt_manager_static/pyscrypt-manager-panel.js?v=19",
             }
         },
         require_admin=False,

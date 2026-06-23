@@ -18,7 +18,7 @@ class PyscryptManagerPanel extends HTMLElement {
       this.initPanel();
       // Seed the cache before loadFiles so the first service-change event
       // doesn't trigger a redundant second updatePanel() call.
-      this._cachedServices = JSON.stringify(hass.services?.pyscrypt || {});
+      this._cachedServices = JSON.stringify(hass.services?.pyscript || {});
       this.loadFiles();
     } else {
       // Only re-render when pyscript services actually change — HA fires this
@@ -162,14 +162,14 @@ class PyscryptManagerPanel extends HTMLElement {
 
       this.selectedFileOriginalContent = this.selectedFileContent;
       this.isEditing = false;
-      this.logToConsole('System', 'File saved successfully.', 'success');
+      this.logToConsole('System', 'File saved. Reloading engine so the latest code is live...', 'success');
 
       // Allow a fresh auto-register attempt now the file content changed.
       if (this._autoRegisterAttempted) this._autoRegisterAttempted.delete(this.selectedFilePath);
 
-      // Reload file list in background to pick up any metadata changes
-      await this.loadFiles();
-      this._autoRegisterServices(this.files.find(f => f.path === this.selectedFilePath));
+      // Always reload after a save so Run executes the just-saved code and any
+      // new/renamed service is registered. reloadPyscripts refreshes the list.
+      await this.reloadPyscripts();
     } catch (err) {
       this.logToConsole('System', `Failed to save file: ${err.message || err}`, 'error');
     } finally {
@@ -179,7 +179,17 @@ class PyscryptManagerPanel extends HTMLElement {
     }
   }
 
+  // The pyscript service name(s) the current selection maps to.
+  selectedServiceTargets() {
+    if (!this.selectedFilePath) return [];
+    const file = this.files.find(f => f.path === this.selectedFilePath);
+    return file ? this.servicesForFile(file) : [this.selectedFilePath];
+  }
+
   async reloadPyscripts() {
+    if (this._reloading) return;
+    this._reloading = true;
+
     const btn = this.shadowRoot.getElementById('btn-reload-pyscripts');
     const svg = btn ? btn.querySelector('svg') : null;
     if (btn) btn.disabled = true;
@@ -188,17 +198,32 @@ class PyscryptManagerPanel extends HTMLElement {
     this.logToConsole('System', 'Triggering Pyscript engine reload...', 'info');
     try {
       await this._hass.callService('pyscript', 'reload', {});
-      this.logToConsole('System', 'Pyscript reload triggered. Allow a few seconds for services to re-register.', 'success');
-      
-      // Reload files after a short delay
-      setTimeout(async () => {
-        await this.loadFiles();
-      }, 2000);
+
+      // Reloading is async: pyscript tears down and re-registers every service,
+      // and HA pushes a fresh hass object (via the setter) as that happens.
+      // Poll the live hass until the selected file's service appears, then do a
+      // single refresh so the Run button unlocks without disrupting the editor.
+      const targets = this.selectedServiceTargets();
+      let registered = targets.length === 0;
+      for (let i = 0; i < 15 && !registered; i++) {
+        await new Promise(r => setTimeout(r, 700));
+        registered = targets.some(s => this._hass.services.pyscript?.[s]);
+      }
+
+      await this.loadFiles();
+      if (registered) {
+        this.logToConsole('System', 'Pyscript reload complete. Services registered.', 'success');
+      } else {
+        this.logToConsole('System', 'Pyscript reloaded, but the expected service did not register. Check the file for errors in the pyscript logs.', 'error');
+      }
     } catch (err) {
       this.logToConsole('System', `Reload service call failed: ${err.message || err}`, 'error');
     } finally {
-      if (btn) btn.disabled = false;
-      if (svg) svg.classList.remove('spin');
+      this._reloading = false;
+      const liveBtn = this.shadowRoot.getElementById('btn-reload-pyscripts');
+      const liveSvg = liveBtn ? liveBtn.querySelector('svg') : null;
+      if (liveBtn) liveBtn.disabled = false;
+      if (liveSvg) liveSvg.classList.remove('spin');
     }
   }
 
@@ -1661,7 +1686,7 @@ def ${path.split('/').pop().replace('.py', '')}():
       } else if (!serviceRegistered) {
         infoBanner = `
             <div style="${bannerStyle}">
-              Service <code>pyscript.${serviceKey}</code> is declared in this file but not registered yet. Click <strong>Reload Engine</strong> to register it.
+              Registering <code>pyscript.${serviceKey}</code>… the engine is reloading automatically. If this persists, the file likely has an error — check the pyscript logs.
             </div>`;
       }
 
