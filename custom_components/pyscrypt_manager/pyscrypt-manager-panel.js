@@ -1460,6 +1460,15 @@ def ${path.split('/').pop().replace('.py', '')}():
     });
   }
 
+  _editorLoadingHtml() {
+    return `
+      <div class="cm-loading">
+        <div class="cm-spinner"></div>
+        <span>Loading source code…</span>
+      </div>
+    `;
+  }
+
   _renderEditorLoadError(mount, readonly) {
     mount.innerHTML = `
       <div class="cm-load-error">
@@ -1471,7 +1480,7 @@ def ${path.split('/').pop().replace('.py', '')}():
     const retryBtn = mount.querySelector('#btn-retry-cm');
     if (retryBtn) {
       retryBtn.addEventListener('click', () => {
-        mount.innerHTML = '';
+        mount.innerHTML = this._editorLoadingHtml();
         this._initCodeEditor(readonly).catch(err => {
           console.error('Code editor initialization failed:', err);
           if (mount.isConnected) this._renderEditorLoadError(mount, readonly);
@@ -1621,12 +1630,7 @@ def ${path.split('/').pop().replace('.py', '')}():
         : (isVirtual ? 'Virtual script. Editing disabled.' : `${relativePath}`);
       bodyHtml = `
         <div class="editor-workspace">
-          <div id="cm-editor-mount" class="cm-editor-mount">
-            <div class="cm-loading">
-              <div class="cm-spinner"></div>
-              <span>Loading source code…</span>
-            </div>
-          </div>
+          <div id="cm-editor-mount" class="cm-editor-mount">${this._editorLoadingHtml()}</div>
           <div class="editor-actions-bar">
             <span class="editor-status">${editorStatusText}</span>
             <div class="editor-buttons">
