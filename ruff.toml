@@ -1,0 +1,22 @@
+# Ruff config for the pyscrypt_manager Home Assistant custom component.
+# Run:  ruff check custom_components/
+#       ruff check --fix custom_components/
+
+target-version = "py312"
+line-length = 88
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort (import ordering)
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "ASYNC", # async-specific lints (HA is async-first)
+    "SIM", # flake8-simplify
+]
+
+[lint.isort]
+force-sort-within-sections = true
+known-first-party = ["custom_components"]
