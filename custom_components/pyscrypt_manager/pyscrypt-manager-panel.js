@@ -39,6 +39,10 @@ class PyscryptManagerPanel extends HTMLElement {
     this.selectedFileContent = '';
     this.selectedFileOriginalContent = '';
     this.isEditing = false;
+    // True when the current file's content failed to load. The editor is then
+    // mounted read-only and Save is disabled so the error placeholder can never
+    // be written over the real script on disk.
+    this.selectedFileLoadError = false;
     this.activeTab = 'visual'; // 'visual' or 'code'
 
     // Filters
@@ -93,14 +97,17 @@ class PyscryptManagerPanel extends HTMLElement {
         const clean = this.sanitizeContent(result.content);
         this.selectedFileContent = clean;
         this.selectedFileOriginalContent = clean;
+        this.selectedFileLoadError = false;
       } catch (err) {
         console.error('Failed to load file content:', err);
         this.selectedFileContent = `# Error loading file: ${err.message || err}`;
         this.selectedFileOriginalContent = this.selectedFileContent;
+        this.selectedFileLoadError = true;
       }
     } else {
       this.selectedFileContent = '';
       this.selectedFileOriginalContent = '';
+      this.selectedFileLoadError = false;
     }
 
     this.updatePanel();
@@ -108,6 +115,8 @@ class PyscryptManagerPanel extends HTMLElement {
 
   async saveFile() {
     if (!this.selectedFilePath) return;
+    // Never persist the "# Error loading file" placeholder over the real script.
+    if (this.selectedFileLoadError) return;
 
     // selectedFileContent is kept current by the CM update listener
 
@@ -800,6 +809,77 @@ def ${path.split('/').pop().replace('.py', '')}():
           overflow: auto;
         }
 
+        .cm-load-error {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          height: 100%;
+          padding: 24px;
+          text-align: center;
+          background-color: var(--editor-bg);
+        }
+
+        .cm-load-error-title {
+          font-weight: 600;
+          margin: 0;
+        }
+
+        .cm-load-error-detail {
+          margin: 0;
+          opacity: 0.7;
+          font-size: 0.85rem;
+          max-width: 360px;
+        }
+
+        /* AI Tab */
+        .ai-tab {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          height: 100%;
+          padding: 24px;
+        }
+
+        .ai-prompt-wrapper {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          width: 100%;
+          max-width: 720px;
+          padding: 14px 22px;
+          background-color: var(--editor-lines-bg, #f1f3f5);
+          border: 1px solid transparent;
+          border-radius: 9999px;
+          transition: border-color 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .ai-prompt-wrapper:focus-within {
+          border-color: var(--primary-color, #3b82f6);
+          box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+        }
+
+        .ai-prompt-icon {
+          width: 22px;
+          height: 22px;
+          flex-shrink: 0;
+          color: var(--text-muted, #6b7280);
+        }
+
+        .ai-prompt-input {
+          flex-grow: 1;
+          border: none;
+          outline: none;
+          background: transparent;
+          font-size: 1.05rem;
+          color: var(--primary-text-color, inherit);
+        }
+
+        .ai-prompt-input::placeholder {
+          color: var(--text-muted, #6b7280);
+        }
+
         .editor-actions-bar {
           display: flex;
           justify-content: space-between;
@@ -1311,10 +1391,13 @@ def ${path.split('/').pop().replace('.py', '')}():
 
   async loadCodeMirror() {
     if (this._cmModules) return this._cmModules;
+    // Pin exact versions. The `codemirror@6` range resolves to the anomalous
+    // 6.65.7 publish, a CM5-style bundle that only has a `default` export, so
+    // named imports like { EditorView, basicSetup } come back undefined.
     const [{ EditorView, basicSetup }, { python }, { oneDark }] = await Promise.all([
-      import('https://esm.sh/codemirror@6'),
-      import('https://esm.sh/@codemirror/lang-python@6'),
-      import('https://esm.sh/@codemirror/theme-one-dark@6'),
+      import('https://esm.sh/codemirror@6.0.2'),
+      import('https://esm.sh/@codemirror/lang-python@6.2.1'),
+      import('https://esm.sh/@codemirror/theme-one-dark@6.1.3'),
     ]);
     this._cmModules = { EditorView, basicSetup, python, oneDark };
     return this._cmModules;
@@ -1329,7 +1412,19 @@ def ${path.split('/').pop().replace('.py', '')}():
     const mount = this.shadowRoot.getElementById('cm-editor-mount');
     if (!mount) return;
 
-    const { EditorView, basicSetup, python, oneDark } = await this.loadCodeMirror();
+    let modules;
+    try {
+      modules = await this.loadCodeMirror();
+    } catch (err) {
+      // CDN unreachable, esm.sh outage, or a bad package publish. Surface a
+      // visible, retryable error instead of leaving the tab permanently blank.
+      console.error('Failed to load CodeMirror from CDN:', err);
+      if (this._cmGeneration !== generation) return;
+      const liveMount = this.shadowRoot.getElementById('cm-editor-mount');
+      if (liveMount) this._renderEditorLoadError(liveMount, readonly);
+      return;
+    }
+    const { EditorView, basicSetup, python, oneDark } = modules;
 
     // Bail if a newer init has started or the mount was removed
     if (this._cmGeneration !== generation) return;
@@ -1367,6 +1462,26 @@ def ${path.split('/').pop().replace('.py', '')}():
       parent: mount,
       root: this.shadowRoot,
     });
+  }
+
+  _renderEditorLoadError(mount, readonly) {
+    mount.innerHTML = `
+      <div class="cm-load-error">
+        <p class="cm-load-error-title">Couldn't load the code editor.</p>
+        <p class="cm-load-error-detail">The editor library is fetched from a CDN. Check your network connection and try again.</p>
+        <button class="btn-action-secondary" id="btn-retry-cm">Retry</button>
+      </div>
+    `;
+    const retryBtn = mount.querySelector('#btn-retry-cm');
+    if (retryBtn) {
+      retryBtn.addEventListener('click', () => {
+        mount.innerHTML = '';
+        this._initCodeEditor(readonly).catch(err => {
+          console.error('Code editor initialization failed:', err);
+          if (mount.isConnected) this._renderEditorLoadError(mount, readonly);
+        });
+      });
+    }
   }
 
   renderRightWorkspace(pyscriptServices) {
@@ -1495,9 +1610,24 @@ def ${path.split('/').pop().replace('.py', '')}():
           </div>
         </div>
       `;
+    } else if (this.activeTab === 'ai') {
+      // AI Tab — a single centered prompt box for describing an automation
+      bodyHtml = `
+        <div class="ai-tab">
+          <div class="ai-prompt-wrapper">
+            <svg class="ai-prompt-icon" viewBox="0 0 24 24">
+              <path fill="currentColor" d="M7.5,5.6L10,7L8.6,4.5L10,2L7.5,3.4L5,2L6.4,4.5L5,7L7.5,5.6M19.5,15.4L17,14L18.4,16.5L17,19L19.5,17.6L22,19L20.6,16.5L22,14L19.5,15.4M22,2L19.5,3.4L17,2L18.4,4.5L17,7L19.5,5.6L22,7L20.6,4.5L22,2M13.34,12.78L15.78,10.34L13.66,8.22L11.22,10.66L13.34,12.78M14.37,7.29C14.76,6.9 15.39,6.9 15.78,7.29L16.71,8.22C17.1,8.61 17.1,9.24 16.71,9.63L4.04,22.3C3.65,22.69 3.02,22.69 2.63,22.3L1.7,21.37C1.31,20.98 1.31,20.35 1.7,19.96L14.37,7.29Z"/>
+            </svg>
+            <input type="text" class="ai-prompt-input" id="ai-prompt-input" placeholder="Turn off the lights when I leave the livingroom" />
+          </div>
+        </div>
+      `;
     } else {
       // Code Editor Tab — CodeMirror mounts into #cm-editor-mount after innerHTML is set
-      const editorStatusText = isVirtual ? 'Virtual script. Editing disabled.' : `${relativePath}`;
+      const editorReadonly = isVirtual || this.selectedFileLoadError;
+      const editorStatusText = this.selectedFileLoadError
+        ? 'Failed to load file. Editing disabled to protect the script on disk.'
+        : (isVirtual ? 'Virtual script. Editing disabled.' : `${relativePath}`);
       bodyHtml = `
         <div class="editor-workspace">
           <div id="cm-editor-mount" class="cm-editor-mount"></div>
@@ -1510,7 +1640,7 @@ def ${path.split('/').pop().replace('.py', '')}():
                 </svg>
                 Reload Engine
               </button>
-              <button class="btn-action-primary" id="btn-save" ${isVirtual ? 'disabled' : ''}>
+              <button class="btn-action-primary" id="btn-save" ${editorReadonly ? 'disabled' : ''}>
                 <svg style="width:16px;height:16px;" viewBox="0 0 24 24">
                   <path fill="currentColor" d="M15,9H5V5H15M12,19A3,3 0 0,1 9,16A3,3 0 0,1 12,13A3,3 0 0,1 15,16A3,3 0 0,1 12,19M17,3H5C3.89,3 3,3.9 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V7L17,3Z"/>
                 </svg>
@@ -1532,8 +1662,9 @@ def ${path.split('/').pop().replace('.py', '')}():
         </div>
         <div class="workspace-controls">
           <div class="toggle-group">
-            <button class="toggle-btn ${this.activeTab === 'visual' ? 'active' : ''}" id="tab-visual-btn">Visual</button>
+            <button class="toggle-btn ${this.activeTab === 'visual' ? 'active' : ''}" id="tab-visual-btn">Testing</button>
             <button class="toggle-btn ${this.activeTab === 'code' ? 'active' : ''}" id="tab-code-btn">Code Editor</button>
+            <button class="toggle-btn ${this.activeTab === 'ai' ? 'active' : ''}" id="tab-ai-btn">AI</button>
           </div>
         </div>
       </div>
@@ -1555,9 +1686,21 @@ def ${path.split('/').pop().replace('.py', '')}():
       this.updatePanel();
     });
 
-    // Initialize CodeMirror for the code editor tab (async, non-blocking)
+    this.shadowRoot.getElementById('tab-ai-btn').addEventListener('click', () => {
+      this.activeTab = 'ai';
+      this.updatePanel();
+    });
+
+    // Initialize CodeMirror for the code editor tab (async, non-blocking).
+    // Read-only for virtual scripts or when the file failed to load. The
+    // .catch() is a safety net so a CDN/init failure can never surface as an
+    // unhandled promise rejection that leaves the tab silently blank.
     if (this.activeTab === 'code') {
-      this._initCodeEditor(isVirtual);
+      this._initCodeEditor(isVirtual || this.selectedFileLoadError).catch(err => {
+        console.error('Code editor initialization failed:', err);
+        const mount = this.shadowRoot.getElementById('cm-editor-mount');
+        if (mount) this._renderEditorLoadError(mount, isVirtual || this.selectedFileLoadError);
+      });
     }
 
     if (this.activeTab === 'visual') {
@@ -1590,7 +1733,7 @@ def ${path.split('/').pop().replace('.py', '')}():
           }
         });
       }
-    } else {
+    } else if (this.activeTab === 'code') {
       // Code Editor Tab buttons
       const saveBtn = this.shadowRoot.getElementById('btn-save');
       if (saveBtn) {
