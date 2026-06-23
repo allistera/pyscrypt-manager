@@ -4,13 +4,12 @@ from __future__ import annotations
 import logging
 import os
 
-import voluptuous as vol
-
 from homeassistant.components import websocket_api
 from homeassistant.components.frontend import async_register_built_in_panel
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
+import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
 DOMAIN = "pyscrypt_manager"
@@ -33,7 +32,9 @@ async def async_register_frontend_resources(hass: HomeAssistant) -> None:
     integration_dir = os.path.dirname(__file__)
     # Register static path for the panel JS file
     await hass.http.async_register_static_paths([
-        StaticPathConfig("/pyscrypt_manager_static", integration_dir, cache_headers=False),
+        StaticPathConfig(
+            "/pyscrypt_manager_static", integration_dir, cache_headers=False
+        ),
     ])
     _LOGGER.info("Registered static path for Pyscrypt Manager frontend resources")
 
@@ -86,14 +87,14 @@ async def ws_list_files(
                 if filename.endswith(".py"):
                     abs_path = os.path.join(root, filename)
                     rel_path = os.path.relpath(abs_path, pyscript_dir)
-                    
+
                     try:
                         size = os.path.getsize(abs_path)
                         mtime = os.path.getmtime(abs_path)
                     except OSError:
                         size = 0
                         mtime = 0
-                        
+
                     files.append({
                         "path": rel_path,
                         "name": filename,
@@ -119,9 +120,13 @@ async def ws_get_file(
     """Get content of a pyscript file."""
     pyscript_dir = os.path.join(hass.config.config_dir, "pyscript")
     file_path = os.path.abspath(os.path.join(pyscript_dir, msg["path"]))
-    
+
     # Secure path traversal check with trailing separator
-    pyscript_dir_prefix = pyscript_dir if pyscript_dir.endswith(os.path.sep) else pyscript_dir + os.path.sep
+    pyscript_dir_prefix = (
+        pyscript_dir
+        if pyscript_dir.endswith(os.path.sep)
+        else pyscript_dir + os.path.sep
+    )
     if not file_path.startswith(pyscript_dir_prefix) and file_path != pyscript_dir:
         connection.send_error(msg["id"], "unauthorized", "Access denied")
         return
@@ -132,7 +137,7 @@ async def ws_get_file(
 
     try:
         def read_file():
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 return f.read()
         content = await hass.async_add_executor_job(read_file)
         connection.send_result(msg["id"], {"content": content})
@@ -154,9 +159,13 @@ async def ws_save_file(
     """Save content of a pyscript file."""
     pyscript_dir = os.path.join(hass.config.config_dir, "pyscript")
     file_path = os.path.abspath(os.path.join(pyscript_dir, msg["path"]))
-    
+
     # Secure path traversal check with trailing separator
-    pyscript_dir_prefix = pyscript_dir if pyscript_dir.endswith(os.path.sep) else pyscript_dir + os.path.sep
+    pyscript_dir_prefix = (
+        pyscript_dir
+        if pyscript_dir.endswith(os.path.sep)
+        else pyscript_dir + os.path.sep
+    )
     if not file_path.startswith(pyscript_dir_prefix) and file_path != pyscript_dir:
         connection.send_error(msg["id"], "unauthorized", "Access denied")
         return

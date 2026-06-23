@@ -16,6 +16,11 @@ select = [
     "ASYNC", # async-specific lints (HA is async-first)
     "SIM", # flake8-simplify
 ]
+ignore = [
+    # HA integrations use os.path; blocking file I/O is already wrapped in
+    # hass.async_add_executor_job, so trio/anyio.Path is not idiomatic here.
+    "ASYNC240",
+]
 
 [lint.isort]
 force-sort-within-sections = true
