@@ -1,6 +1,7 @@
 """Pyscrypt Manager integration for Home Assistant."""
 from __future__ import annotations
 
+import ast
 import logging
 import os
 
@@ -15,6 +16,43 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN = "pyscrypt_manager"
 
 CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
+
+
+def _extract_service_names(source: str) -> list[str]:
+    """Return the pyscript service names a source file registers.
+
+    Pyscript names a service after the function decorated with ``@service``
+    (not the filename), so we statically parse the decorators rather than
+    guessing from the path. ``@service("domain.name")`` overrides the name;
+    the ``supports_response`` keyword is ignored.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return []
+
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            # @service
+            if isinstance(dec, ast.Name) and dec.id == "service":
+                names.add(node.name)
+            # @service(...) — explicit positional name wins, else function name
+            elif isinstance(dec, ast.Call) and (
+                isinstance(dec.func, ast.Name) and dec.func.id == "service"
+            ):
+                explicit = next(
+                    (
+                        a.value
+                        for a in dec.args
+                        if isinstance(a, ast.Constant) and isinstance(a.value, str)
+                    ),
+                    None,
+                )
+                names.add(explicit.split(".", 1)[-1] if explicit else node.name)
+    return sorted(names)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -50,7 +88,7 @@ async def async_register_frontend_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "pyscrypt-manager-panel",
-                "module_url": "/pyscrypt_manager_static/pyscrypt-manager-panel.js?v=16",
+                "module_url": "/pyscrypt_manager_static/pyscrypt-manager-panel.js?v=17",
             }
         },
         require_admin=False,
@@ -95,11 +133,18 @@ async def ws_list_files(
                         size = 0
                         mtime = 0
 
+                    try:
+                        with open(abs_path, encoding="utf-8") as f:
+                            services = _extract_service_names(f.read())
+                    except OSError:
+                        services = []
+
                     files.append({
                         "path": rel_path,
                         "name": filename,
                         "size": size,
                         "mtime": mtime,
+                        "services": services,
                     })
         return files
 

@@ -43,6 +43,9 @@ class PyscryptManagerPanel extends HTMLElement {
     // mounted read-only and Save is disabled so the error placeholder can never
     // be written over the real script on disk.
     this.selectedFileLoadError = false;
+    // When a file declares multiple @service functions, which one is chosen
+    // in the Testing tab. Reset on each file selection.
+    this.selectedServiceKey = null;
     this.activeTab = 'visual'; // 'visual' or 'code'
 
     // Filters
@@ -87,6 +90,7 @@ class PyscryptManagerPanel extends HTMLElement {
     this.selectedFilePath = filePath;
     this.isEditing = false;
     this.consoleLogs = [];
+    this.selectedServiceKey = null;
 
     if (filePath) {
       try {
@@ -209,6 +213,21 @@ def ${path.split('/').pop().replace('.py', '')}():
     if (!filePath) return '';
     const base = filePath.replace(/\.py$/, '');
     return base.replace(/[\/\\]/g, '_');
+  }
+
+  // Service names a file declares via @service, parsed by the backend. Falls
+  // back to the filename-derived key for older backends that omit `services`.
+  servicesForFile(file) {
+    if (file && Array.isArray(file.services) && file.services.length) {
+      return file.services;
+    }
+    return file ? [this.getServiceKey(file.path)] : [];
+  }
+
+  // Of a file's declared services, those actually registered with pyscript.
+  registeredServicesForFile(file) {
+    const registered = (this._hass && this._hass.services.pyscript) || {};
+    return this.servicesForFile(file).filter(name => registered[name]);
   }
 
   escapeHtml(text) {
@@ -1253,17 +1272,20 @@ def ${path.split('/').pop().replace('.py', '')}():
 
     // Add physical files
     customFiles.forEach(file => {
-      const serviceKey = this.getServiceKey(file.path);
+      const declared = this.servicesForFile(file);
+      const registered = this.registeredServicesForFile(file);
 
       displayList.push({
         type: 'file',
         path: file.path,
         name: file.name,
-        serviceKey: serviceKey,
+        // first declared service drives display/search; full set used for dedup
+        serviceKey: registered[0] || declared[0] || this.getServiceKey(file.path),
+        services: declared,
         mtime: file.mtime,
         size: file.size,
-        // active only when a pyscript service with this name is actually registered
-        status: pyscriptServices[serviceKey] ? 'active' : 'inactive'
+        // active only when at least one declared service is actually registered
+        status: registered.length ? 'active' : 'inactive'
       });
     });
 
@@ -1272,13 +1294,16 @@ def ${path.split('/').pop().replace('.py', '')}():
       const isSystem = ['reload', 'generate_stubs', 'jupyter_kernel_start'].includes(key);
       if (isSystem) return; // exclude system/built-in services completely
 
-      const hasFile = displayList.some(item => item.serviceKey === key);
+      const hasFile = displayList.some(
+        item => item.serviceKey === key || (item.services && item.services.includes(key))
+      );
       if (!hasFile) {
         displayList.push({
           type: 'service',
           path: null,
           name: key,
           serviceKey: key,
+          services: [key],
           mtime: null,
           size: 0,
           status: 'active'
@@ -1518,8 +1543,16 @@ def ${path.split('/').pop().replace('.py', '')}():
 
     // Identify active selected item
     const file = this.files.find(f => f.path === this.selectedFilePath);
-    const serviceKey = file ? this.getServiceKey(file.path) : this.selectedFilePath;
     const isVirtual = !file;
+
+    // Resolve which pyscript service this selection maps to. For files we use
+    // the @service names parsed by the backend (preferring registered ones);
+    // a file may declare several, in which case the user picks via a dropdown.
+    const declaredServices = isVirtual ? [this.selectedFilePath] : this.servicesForFile(file);
+    const registeredServices = declaredServices.filter(name => pyscriptServices[name]);
+    const serviceKey = declaredServices.includes(this.selectedServiceKey)
+      ? this.selectedServiceKey
+      : (registeredServices[0] || declaredServices[0] || '');
     const serviceData = pyscriptServices[serviceKey];
 
     const titleName = file ? file.name : serviceKey;
@@ -1587,17 +1620,42 @@ def ${path.split('/').pop().replace('.py', '')}():
       }
 
       const serviceRegistered = !!serviceData;
-      const notRegisteredBanner = serviceRegistered ? '' : `
-            <div style="margin-bottom:16px; padding:10px 14px; border-radius:8px; background:rgba(220,38,38,0.12); border:1px solid var(--error-color); color:var(--text-main); font-size:0.82rem; line-height:1.45;">
-              No registered service <code>pyscript.${serviceKey}</code>. Pyscript names services after the <code>@service</code>-decorated function, not the filename. Confirm the file defines <code>@service\ndef ${serviceKey}(...)</code>, then click <strong>Reload Engine</strong>.
+      const bannerStyle = 'margin-bottom:16px; padding:10px 14px; border-radius:8px; background:rgba(220,38,38,0.12); border:1px solid var(--error-color); color:var(--text-main); font-size:0.82rem; line-height:1.45;';
+
+      let infoBanner = '';
+      if (!isVirtual && declaredServices.length === 0) {
+        infoBanner = `
+            <div style="${bannerStyle}">
+              This file defines no <code>@service</code> function, so there is nothing to run here. Add a function decorated with <code>@service</code>, then click <strong>Reload Engine</strong>.
             </div>`;
+      } else if (!serviceRegistered) {
+        infoBanner = `
+            <div style="${bannerStyle}">
+              Service <code>pyscript.${serviceKey}</code> is declared in this file but not registered yet. Click <strong>Reload Engine</strong> to register it.
+            </div>`;
+      }
+
+      // When a file declares more than one @service function, let the user pick.
+      let servicePicker = '';
+      if (declaredServices.length > 1) {
+        const opts = declaredServices.map(name => {
+          const unreg = pyscriptServices[name] ? '' : ' (not registered)';
+          return `<option value="${name}" ${name === serviceKey ? 'selected' : ''}>pyscript.${name}${unreg}</option>`;
+        }).join('');
+        servicePicker = `
+            <div class="form-row">
+              <div class="form-label">Service</div>
+              <select class="form-input-text" id="service-select">${opts}</select>
+            </div>`;
+      }
 
       bodyHtml = `
         <div class="visual-cockpit">
           <!-- Parameter Configuration Card -->
           <div class="card-panel">
             <div class="panel-heading">Service Fields / Arguments</div>
-            ${notRegisteredBanner}
+            ${infoBanner}
+            ${servicePicker}
             ${paramsFormHtml}
 
             <div style="margin-top:24px;">
@@ -1704,6 +1762,14 @@ def ${path.split('/').pop().replace('.py', '')}():
       if (runBtn) {
         runBtn.addEventListener('click', () => {
           this.runScript(serviceKey, serviceData?.fields);
+        });
+      }
+
+      const svcSelect = this.shadowRoot.getElementById('service-select');
+      if (svcSelect) {
+        svcSelect.addEventListener('change', (e) => {
+          this.selectedServiceKey = e.target.value;
+          this.updatePanel();
         });
       }
 
