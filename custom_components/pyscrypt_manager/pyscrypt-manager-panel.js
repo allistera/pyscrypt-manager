@@ -253,8 +253,23 @@ def ${path.split('/').pop().replace('.py', '')}():
   }
 
   async runScript(serviceKey, fields) {
+    // Pyscript registers services under the @service-decorated function name,
+    // not the filename. If no matching service is registered, fail early with
+    // an actionable message instead of a raw "service not found" error.
+    const registered = (this._hass && this._hass.services.pyscript) || {};
+    if (!registered[serviceKey]) {
+      this.logToConsole(
+        'Service Result',
+        `No registered service pyscript.${serviceKey}. Pyscript names services ` +
+        `after the @service-decorated function, not the filename — confirm the ` +
+        `file defines "@service\\ndef ${serviceKey}(...)", then click Reload Engine.`,
+        'error'
+      );
+      return;
+    }
+
     this.logToConsole('Client', `Executing pyscript.${serviceKey}...`, 'info');
-    
+
     // Gather arguments
     const params = {};
     if (fields) {
@@ -1214,7 +1229,6 @@ def ${path.split('/').pop().replace('.py', '')}():
     // Add physical files
     customFiles.forEach(file => {
       const serviceKey = this.getServiceKey(file.path);
-      const data = pyscriptServices[serviceKey] || {};
 
       displayList.push({
         type: 'file',
@@ -1223,7 +1237,8 @@ def ${path.split('/').pop().replace('.py', '')}():
         serviceKey: serviceKey,
         mtime: file.mtime,
         size: file.size,
-        status: data ? 'active' : 'inactive' // active if loaded by HA core, else inactive
+        // active only when a pyscript service with this name is actually registered
+        status: pyscriptServices[serviceKey] ? 'active' : 'inactive'
       });
     });
 
@@ -1534,15 +1549,22 @@ def ${path.split('/').pop().replace('.py', '')}():
         `;
       }
 
+      const serviceRegistered = !!serviceData;
+      const notRegisteredBanner = serviceRegistered ? '' : `
+            <div style="margin-bottom:16px; padding:10px 14px; border-radius:8px; background:rgba(220,38,38,0.12); border:1px solid var(--error-color); color:var(--text-main); font-size:0.82rem; line-height:1.45;">
+              No registered service <code>pyscript.${serviceKey}</code>. Pyscript names services after the <code>@service</code>-decorated function, not the filename. Confirm the file defines <code>@service\ndef ${serviceKey}(...)</code>, then click <strong>Reload Engine</strong>.
+            </div>`;
+
       bodyHtml = `
         <div class="visual-cockpit">
           <!-- Parameter Configuration Card -->
           <div class="card-panel">
             <div class="panel-heading">Service Fields / Arguments</div>
+            ${notRegisteredBanner}
             ${paramsFormHtml}
-            
+
             <div style="margin-top:24px;">
-              <button class="btn-action-primary" id="btn-run-script">
+              <button class="btn-action-primary" id="btn-run-script" ${serviceRegistered ? '' : 'disabled'}>
                 <svg style="width:18px;height:18px;" viewBox="0 0 24 24">
                   <path fill="currentColor" d="M8,5.14V19.14L19,12.14L8,5.14Z"/>
                 </svg>
